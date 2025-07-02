@@ -20,7 +20,7 @@ To run this project, you will need to have the following files downloaded on you
 To deploy this project run
 
 ```bash
-  npm run deploy
+  python main.py
 ```
 
 
