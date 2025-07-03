@@ -59,18 +59,24 @@ If there are multiple topics inside of the video, it will repeat these steps and
 
 ## Libraries used
 
-OS
-
-flask
-
-sys
-
-face_recognition
-
-pandas
-
-opencsv
-
-moviepy
-
-spacey (use any model)
+``` bash
+pip install opencv-python
+```
+``` bash
+pip install scipy
+```
+``` bash
+pip install spacy
+```
+``` bash
+pip install moviepy
+```
+``` bash
+pip install datetime
+```
+``` bash
+pip install face_recognition
+```
+``` bash
+pip install assemblyai
+```
