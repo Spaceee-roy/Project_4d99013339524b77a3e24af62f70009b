@@ -57,7 +57,7 @@ If there are multiple topics inside of the video, it will repeat these steps and
 
 
 
-## Libraries used
+## Libraries Used
 
 ``` bash
 pip install opencv-python
