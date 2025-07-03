@@ -80,3 +80,6 @@ pip install face_recognition
 ``` bash
 pip install assemblyai
 ```
+``` bash
+pip install pandas
+```
