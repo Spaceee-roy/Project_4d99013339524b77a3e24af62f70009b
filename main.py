@@ -5,7 +5,7 @@ import numpy as np
 import time
 from datetime import timedelta
 from scipy.interpolate import interp1d
-from moviepy.editor import VideoFileClip, AudioFileClip
+from moviepy import VideoFileClip, AudioFileClip
 import tkinter as tk
 from tkinter import filedialog
 import assemblyai as aai
@@ -13,8 +13,15 @@ import os
 import subprocess
 
 # AssemblyAI API Key
-aai.settings.api_key = ''  # <- Insert your API key here
-
+aai.settings.api_key = '4d99013339524b77a3e24af62f70009b'
+import sys
+def print_progress_bar(iteration, total, prefix='', suffix='', length=40):
+        percent = f"{100 * (iteration / float(total)):.1f}"
+        filled_length = int(length * iteration // total)
+        bar = '█' * filled_length + '-' * (length - filled_length)
+        print(f'\r{prefix} |{bar}| {percent}% {suffix}', end='')
+        if iteration == total:
+            print()
 # File Picker
 def pick_file(filetypes, title="Select a file"):
     root = tk.Tk()
@@ -29,16 +36,28 @@ def save_file(default_ext, title="Save file as"):
 
 # Cut video and extract audio
 def cut_video(input_path, output_path, start_time, end_time):
+    # Convert string inputs to float for time values
     start_time = float(start_time)
     end_time = float(end_time)
+    
     try:
+        # Load the video
         with VideoFileClip(input_path) as video:
-            cut_clip = video.subclip(start_time, end_time)
+            # Cut the video
+            cut_video = video.subclipped(start_time, end_time)
+            
+            # Extract and save audio
             audio_path = output_path.replace('.mp4', '.mp3')
-            cut_clip.audio.write_audiofile(audio_path)
-            cut_clip.write_videofile(output_path, codec="libx264")
+            cut_video.audio.write_audiofile(audio_path)
+            
+            # Write the video
+            cut_video.write_videofile(
+                output_path,
+                codec="libx264"
+            )
+            
     except Exception as e:
-        print(f"Error during video cutting: {e}")
+        print(f"An error occurred: {str(e)}")
 
 # Reformat video to follow face position
 def process_video(video_path, output_path):
@@ -75,6 +94,7 @@ def process_video(video_path, output_path):
             timestamps.append(current_time)
 
         frame_count += 1
+        print_progress_bar(frame_count, total_frames, prefix='Progress', suffix='Complete', length=40)
 
     video_capture.release()
     df = pd.DataFrame({'Timestamp': timestamps, 'Face_X_Position': face_x_positions}).bfill()
@@ -91,6 +111,11 @@ def process_video(video_path, output_path):
     out = None
     frame_count = 0
     last_center = None
+
+    # Loading bar setup
+    
+
+    print_progress_bar(0, total_frames, prefix='Progress', suffix='Complete', length=40)
 
     while True:
         ret, frame = video_capture.read()
@@ -121,6 +146,7 @@ def process_video(video_path, output_path):
         except Exception as e:
             print(f"Error on frame {frame_count}: {e}")
         frame_count += 1
+        print_progress_bar(frame_count, total_frames, prefix='Progress', suffix='Complete', length=40)
 
     if out:
         out.release()
@@ -133,7 +159,7 @@ def combine_video_audio(video_path, audio_path, output_path):
     try:
         video = VideoFileClip(video_path)
         audio = AudioFileClip(audio_path)
-        video = video.set_audio(audio)
+        video.audio = audio
         video.write_videofile(output_path, codec='libx264', audio_codec='aac')
     except Exception as e:
         print(f"Error combining video and audio: {e}")
@@ -170,42 +196,44 @@ def add_subtitles(video_path, subtitle_path, output_path):
 # Main driver
 def main():
     print("🎥 Step 1: Select input video")
-    input_path = pick_file([("MP4 files", "*.mp4")], "Select the video to process")
-
-    trim_choice = input("✂️ Trim the video? (yes/no): ").strip().lower()
-    if trim_choice == 'yes':
-        trimmed_output = save_file(".mp4", "Save trimmed video as")
-        start = input("Start time (in seconds): ")
-        end = input("End time (in seconds): ")
-        cut_video(input_path, trimmed_output, start, end)
-        video_to_process = trimmed_output
-    else:
-        video_to_process = input_path
-
-    print("\n📐 Step 2: Reformat to 9:16 face-following video")
-    reformatted_output = save_file(".mp4", "Save reformatted video as")
+    input_path = f'C:\\Users\\pcofp\\Desktop\\Python\\{input("Enter the name of the unedited video : ").strip()}'
+    
+    if not input_path.endswith('.mp4'):
+        input_path += '.mp4'
+    
+    trimmed_output = f'C:\\Users\\pcofp\\Desktop\\Python\\temp\\{input("Enter what the name of the trimmed video should be : ").strip()}'
+    if not trimmed_output.endswith('.mp4'):
+        trimmed_output += '.mp4'
+    audio_path_temp = trimmed_output.replace('.mp4', '.mp3')
+    start = input("Start time (in seconds): ")
+    end = input("End time (in seconds): ")
+    cut_video(input_path, trimmed_output, start, end)
+    video_to_process = trimmed_output
+   
+    print("\n📐 Step 2: Reformating to 9:16 with face-tracking...")
+    reformatted_output = trimmed_output.replace('.mp4', '_reformatted.mp4')
+    if not reformatted_output.endswith('.mp4'):
+        reformatted_output += '.mp4'
     process_video(video_to_process, reformatted_output)
 
-    print("\n🎧 Step 3: Add or replace audio?")
-    if input("Add/replace audio? (yes/no): ").strip().lower() == 'yes':
-        audio_path = pick_file([("MP3 files", "*.mp3")], "Select MP3 audio file")
-        combined_output = save_file(".mp4", "Save final video with audio")
-        combine_video_audio(reformatted_output, audio_path, combined_output)
-        final_video_path = combined_output
-    else:
-        final_video_path = reformatted_output
+    print("\n🎧 Step 3: Adding Audio")
+    
+    audio_path = audio_path_temp
+    combined_output = audio_path_temp.replace('.mp3', '_with_audio.mp4')
+    combine_video_audio(reformatted_output, audio_path, combined_output)
+    final_video_path = combined_output
 
-    print("\n📝 Step 4: Generate subtitles?")
-    if input("Generate subtitles? (yes/no): ").strip().lower() == 'yes':
-        subtitle_output = save_file(".srt", "Save subtitles file as")
-        generate_subtitles(final_video_path, subtitle_output)
+    print("\n📝 Step 4: Generating Subtitles")
 
-        print("\n🎬 Step 5: Overlay subtitles into video?")
-        if input("Overlay subtitles on video? (yes/no): ").strip().lower() == 'yes':
-            video_with_subs_output = save_file(".mp4", "Save video with burned-in subtitles")
-            add_subtitles(final_video_path, subtitle_output, video_with_subs_output)
+    subtitle_output = trimmed_output.replace('.mp4', '.srt')
+    generate_subtitles(final_video_path, subtitle_output)
 
-    print("\n✅ All tasks completed!")
+    print("\n🎬 Step 5: Finishing Makeup")
+  
+    video_with_subs_output = trimmed_output.replace('.mp4', '_done.mp4')
+    add_subtitles(final_video_path, subtitle_output, video_with_subs_output)
+
+    print("\n✅ Video Completed Successfully!")
 
 if __name__ == "__main__":
     try:
