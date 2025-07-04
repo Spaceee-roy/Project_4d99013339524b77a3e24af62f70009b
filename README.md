@@ -1,5 +1,5 @@
 # YouTube Short Automation Script
-This repository contains the code for the YouTube Short Automation Created by Spaceee-roy and helped Attit11.
+This repository contains the code for the YouTube Short Automation Created by Spaceee-roy and helped by Attit11.
 
 # Important Note
 
