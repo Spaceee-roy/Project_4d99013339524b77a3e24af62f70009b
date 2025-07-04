@@ -2,7 +2,6 @@ import face_recognition
 import cv2
 import pandas as pd
 import numpy as np
-import time
 from datetime import timedelta
 from scipy.interpolate import interp1d
 from moviepy import VideoFileClip, AudioFileClip
@@ -177,29 +176,33 @@ def generate_subtitles(video_path, subtitle_path):
     print("✅ Subtitle file created successfully!")
 
 # Add subtitles to video using ffmpeg
+
+
+import os
+
 def add_subtitles(video_path, subtitle_path, output_path):
     try:
-        video_path_ff = video_path.replace('\\', '/')
-        subtitle_path_ff = subtitle_path.replace('\\', '/')
-        output_path_ff = output_path.replace('\\', '/')
-        # Use file\' prefix and single quotes for Windows
+        # Change working directory to the folder containing the files
+        workdir = os.path.dirname(os.path.abspath(video_path))
+        os.chdir(workdir)
+        video_file = os.path.basename(video_path)
+        subtitle_file = os.path.basename(subtitle_path)
+        output_file = os.path.abspath(output_path)
+
         command = [
-    'ffmpeg',
-    '-i', video_path_ff,
-    '-vf', (
-        f"subtitles=file\\'{subtitle_path_ff}':"
-        "force_style='FontName=Roboto,Alignment=2,MarginV=75,FontSize=14,Bold=1,PrimaryColour=&HFFFFFF&'"
-    ),
-    '-c:a', 'copy',
-    output_path_ff
-]
+            'ffmpeg',
+            '-i', video_file,
+            '-vf', f"subtitles={subtitle_file}:force_style='FontName=Roboto,Alignment=2,MarginV=75,FontSize=14,Bold=1,PrimaryColour=&HFFFFFF&'",
+            '-c:a', 'copy',
+            output_file
+        ]
         print(f"Running command: {' '.join(command)}")
         subprocess.run(command, check=True)
-        print(f"✅ Video with subtitles saved to: {output_path}")
+        print(f"✅ Video with subtitles saved to: {output_file}")
     except subprocess.CalledProcessError as e:
-        print(f"FFmpeg error: {str(e)}")
+        print(f"Error adding subtitles: {str(e)}")
     except Exception as e:
-        print(f"Unexpected error: {str(e)}")
+        print(f"An unexpected error occurred: {str(e)}")
 # Main driver
 def main():
     print("🎥 Step 1: Select input video")
