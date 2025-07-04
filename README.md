@@ -83,3 +83,12 @@ pip install assemblyai
 ``` bash
 pip install pandas
 ```
+``` bash
+pip install sentence_transformers
+```
+``` bash
+pip install sklearn
+```
+``` bash
+pip install pysrt
+```
