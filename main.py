@@ -164,10 +164,6 @@ def generate_subtitles(video_path, subtitle_path):
 
     print("✅ Subtitle file created successfully!")
 
-# Add subtitles to video using ffmpeg
-
-
-import os
 
 def add_subtitles(video_path, subtitle_path, output_path):
     try:
