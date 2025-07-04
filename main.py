@@ -10,10 +10,10 @@ from tkinter import filedialog
 import assemblyai as aai
 import os
 import subprocess
-
+import sys
 # AssemblyAI API Key
 aai.settings.api_key = ''
-import sys
+
 def print_progress_bar(iteration, total, prefix='', suffix='', length=40):
         percent = f"{100 * (iteration / float(total)):.1f}"
         filled_length = int(length * iteration // total)
