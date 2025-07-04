@@ -21,17 +21,6 @@ def print_progress_bar(iteration, total, prefix='', suffix='', length=40):
         print(f'\r{prefix} |{bar}| {percent}% {suffix}', end='')
         if iteration == total:
             print()
-# File Picker
-def pick_file(filetypes, title="Select a file"):
-    root = tk.Tk()
-    root.withdraw()
-    return filedialog.askopenfilename(filetypes=filetypes, title=title)
-
-# Save As Dialog
-def save_file(default_ext, title="Save file as"):
-    root = tk.Tk()
-    root.withdraw()
-    return filedialog.asksaveasfilename(defaultextension=default_ext, title=title)
 
 # Cut video and extract audio
 def cut_video(input_path, output_path, start_time, end_time):
@@ -192,7 +181,7 @@ def add_subtitles(video_path, subtitle_path, output_path):
         command = [
             'ffmpeg',
             '-i', video_file,
-            '-vf', f"subtitles={subtitle_file}:force_style='FontName=Roboto,Alignment=2,MarginV=75,FontSize=14,Bold=1,PrimaryColour=&HFFFFFF&'",
+            '-vf', f"subtitles={subtitle_file}:force_style='FontName=Roboto,Alignment=2,MarginV=75,FontSize=14,Bold=1,PrimaryColour=&FFFF00&'",
             '-c:a', 'copy',
             output_file
         ]
