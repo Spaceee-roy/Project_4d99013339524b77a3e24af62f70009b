@@ -13,7 +13,7 @@ import os
 import subprocess
 
 # AssemblyAI API Key
-aai.settings.api_key = ''
+aai.settings.api_key = '4d99013339524b77a3e24af62f70009b'
 import sys
 def print_progress_bar(iteration, total, prefix='', suffix='', length=40):
         percent = f"{100 * (iteration / float(total)):.1f}"
@@ -184,12 +184,16 @@ def add_subtitles(video_path, subtitle_path, output_path):
         output_path_ff = output_path.replace('\\', '/')
         # Use file\' prefix and single quotes for Windows
         command = [
-            'ffmpeg',
-            '-i', video_path_ff,
-            '-vf', f"subtitles=file\\'{subtitle_path_ff}':force_style='FontName=Roboto,Alignment=2,MarginV=75,FontSize=14,Bold=1,PrimaryColour=&HFFFF&'",
-            '-c:a', 'copy',
-            output_path_ff
-        ]
+    'ffmpeg',
+    '-i', video_path_ff,
+    '-vf', (
+        f"subtitles=file\\'{subtitle_path_ff}':"
+        "force_style='FontName=Roboto,Alignment=2,MarginV=75,FontSize=14,Bold=1,PrimaryColour=&HFFFFFF&'"
+    ),
+    '-c:a', 'copy',
+    output_path_ff
+]
+        print(f"Running command: {' '.join(command)}")
         subprocess.run(command, check=True)
         print(f"✅ Video with subtitles saved to: {output_path}")
     except subprocess.CalledProcessError as e:
@@ -228,7 +232,7 @@ def main():
 
     print("\n📝 Step 4: Generating Subtitles")
 
-    subtitle_output = trimmed_output.replace('.mp4', '.srt')
+    subtitle_output = 'C:\\Users\\pcofp\\Desktop\\Python\\temp\\subtitles.srt'
     generate_subtitles(final_video_path, subtitle_output)
 
     print("\n🎬 Step 5: Finishing Makeup")
