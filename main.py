@@ -179,14 +179,14 @@ def generate_subtitles(video_path, subtitle_path):
 # Add subtitles to video using ffmpeg
 def add_subtitles(video_path, subtitle_path, output_path):
     try:
-        # Replace backslashes with forward slashes for ffmpeg compatibility
         video_path_ff = video_path.replace('\\', '/')
         subtitle_path_ff = subtitle_path.replace('\\', '/')
         output_path_ff = output_path.replace('\\', '/')
+        # Use file\' prefix and single quotes for Windows
         command = [
             'ffmpeg',
             '-i', video_path_ff,
-            '-vf', f"subtitles='{subtitle_path_ff}':force_style='FontName=Roboto,Alignment=2,MarginV=75,FontSize=14,Bold=1,PrimaryColour=&HFFFF&'",
+            '-vf', f"subtitles=file\\'{subtitle_path_ff}':force_style='FontName=Roboto,Alignment=2,MarginV=75,FontSize=14,Bold=1,PrimaryColour=&HFFFF&'",
             '-c:a', 'copy',
             output_path_ff
         ]
