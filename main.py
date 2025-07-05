@@ -10,10 +10,10 @@ from tkinter import filedialog
 import assemblyai as aai
 import os
 import subprocess
-import sys
+
 # AssemblyAI API Key
 aai.settings.api_key = ''
-
+import sys
 def print_progress_bar(iteration, total, prefix='', suffix='', length=40):
         percent = f"{100 * (iteration / float(total)):.1f}"
         filled_length = int(length * iteration // total)
@@ -164,6 +164,10 @@ def generate_subtitles(video_path, subtitle_path):
 
     print("✅ Subtitle file created successfully!")
 
+# Add subtitles to video using ffmpeg
+
+
+import os
 
 def add_subtitles(video_path, subtitle_path, output_path):
     try:
