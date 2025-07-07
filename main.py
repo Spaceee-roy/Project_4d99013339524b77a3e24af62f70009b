@@ -135,7 +135,7 @@ def combine_video_audio(video_path, audio_path, output_path):
         print(f"Error combining video and audio: {e}")
 
 def generate_subtitles(video_path, subtitle_path):
-    print("Transcribing audio...")
+    print("🎧 Transcribing audio...")
     transcriber = aai.Transcriber(config=aai.TranscriptionConfig(speech_model=aai.SpeechModel.nano))
     transcript = transcriber.transcribe(video_path)
     subtitles = transcript.export_subtitles_srt()
