@@ -13,7 +13,7 @@ import executioner
 # AssemblyAI API Key
 aai.settings.api_key = '4d99013339524b77a3e24af62f70009b'
 
-def print_progress_bar(iteration, total, prefix='', suffix='', length=20):
+def print_progress_bar(iteration, total, prefix='', suffix='', length=10):
     percent = f"{100 * (iteration / float(total)):.1f}"
     filled_length = int(length * iteration // total)
     bar = '☻' * filled_length + '☺' * (length - filled_length)
@@ -70,7 +70,7 @@ def process_video(video_path, output_path):
             timestamps.append(current_time)
 
         frame_count += 1
-        print_progress_bar(frame_count, total_frames, prefix='Progress', suffix='Complete', length=40)
+        print_progress_bar(frame_count, total_frames, prefix='Progress', suffix='Complete', length=20)
 
     video_capture.release()
     df = pd.DataFrame({'Timestamp': timestamps, 'Face_X_Position': face_x_positions}).bfill()
@@ -117,7 +117,7 @@ def process_video(video_path, output_path):
         except Exception as e:
             print(f"Error on frame {frame_count}: {e}")
         frame_count += 1
-        print_progress_bar(frame_count, total_frames, prefix='Progress', suffix='Complete', length=40)
+        print_progress_bar(frame_count, total_frames, prefix='Progress', suffix='Complete', length=20)
 
     if out:
         out.release()
