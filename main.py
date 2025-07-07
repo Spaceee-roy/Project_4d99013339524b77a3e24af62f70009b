@@ -7,44 +7,32 @@ from moviepy import VideoFileClip, AudioFileClip
 import assemblyai as aai
 import os
 import subprocess
-import sys
+import executioner
+import time
 
 # AssemblyAI API Key
-aai.settings.api_key = ''
-def print_progress_bar(iteration, total, prefix='', suffix='', length=40):
-        percent = f"{100 * (iteration / float(total)):.1f}"
-        filled_length = int(length * iteration // total)
-        bar = '█' * filled_length + '-' * (length - filled_length)
-        print(f'\r{prefix} |{bar}| {percent}% {suffix}', end='')
-        if iteration == total:
-            print()
+aai.settings.api_key = '4d99013339524b77a3e24af62f70009b'
 
-# Cut video and extract audio
+def print_progress_bar(iteration, total, prefix='', suffix='', length=20):
+    percent = f"{100 * (iteration / float(total)):.1f}"
+    filled_length = int(length * iteration // total)
+    bar = '☻' * filled_length + '☺' * (length - filled_length)
+    print(f'\r{prefix} |{bar}| {percent}% {suffix}', end='')
+    if iteration == total:
+        print()
+
 def cut_video(input_path, output_path, start_time, end_time):
-    # Convert string inputs to float for time values
     start_time = float(start_time)
     end_time = float(end_time)
-    
     try:
-        # Load the video
         with VideoFileClip(input_path) as video:
-            # Cut the video
             cut_video = video.subclipped(start_time, end_time)
-            
-            # Extract and save audio
             audio_path = output_path.replace('.mp4', '.mp3')
             cut_video.audio.write_audiofile(audio_path)
-            
-            # Write the video
-            cut_video.write_videofile(
-                output_path,
-                codec="libx264"
-            )
-            
+            cut_video.write_videofile(output_path, codec="libx264")
     except Exception as e:
-        print(f"An error occurred: {str(e)}")
+        print(f"Error in cut_video: {e}")
 
-# Reformat video to follow face position
 def process_video(video_path, output_path):
     video_capture = cv2.VideoCapture(video_path)
     if not video_capture.isOpened():
@@ -85,7 +73,6 @@ def process_video(video_path, output_path):
     df = pd.DataFrame({'Timestamp': timestamps, 'Face_X_Position': face_x_positions}).bfill()
     df.to_csv('face_positions.csv', index=False)
 
-    # Cropping and writing output
     print("Phase 2: Reformatting video...")
     video_capture = cv2.VideoCapture(video_path)
     interpolator = interp1d(df['Timestamp'], df['Face_X_Position'], kind='cubic', fill_value='extrapolate')
@@ -96,10 +83,6 @@ def process_video(video_path, output_path):
     out = None
     frame_count = 0
     last_center = None
-
-    # Loading bar setup
-    
-
     print_progress_bar(0, total_frames, prefix='Progress', suffix='Complete', length=40)
 
     while True:
@@ -137,9 +120,8 @@ def process_video(video_path, output_path):
         out.release()
     video_capture.release()
     cv2.destroyAllWindows()
-    print("Video reformatted and saved!")
+    print("✅ Video reformatted and saved!")
 
-# Combine new video with custom audio
 def combine_video_audio(video_path, audio_path, output_path):
     try:
         video = VideoFileClip(video_path)
@@ -149,7 +131,6 @@ def combine_video_audio(video_path, audio_path, output_path):
     except Exception as e:
         print(f"Error combining video and audio: {e}")
 
-# Transcribe video audio and create subtitle file
 def generate_subtitles(video_path, subtitle_path):
     print("Transcribing audio...")
     transcriber = aai.Transcriber(config=aai.TranscriptionConfig(speech_model=aai.SpeechModel.nano))
@@ -158,14 +139,10 @@ def generate_subtitles(video_path, subtitle_path):
 
     with open(subtitle_path, 'w') as f:
         f.write(subtitles)
-
     print("✅ Subtitle file created successfully!")
-
-# Add subtitles to video using ffmpeg
 
 def add_subtitles(video_path, subtitle_path, output_path):
     try:
-        # Change working directory to the folder containing the files
         workdir = os.path.dirname(os.path.abspath(video_path))
         os.chdir(workdir)
         video_file = os.path.basename(video_path)
@@ -175,7 +152,7 @@ def add_subtitles(video_path, subtitle_path, output_path):
         command = [
             'ffmpeg',
             '-i', video_file,
-            '-vf', f"subtitles={subtitle_file}:force_style='FontName=Roboto,Alignment=2,MarginV=75,FontSize=14,Bold=1,PrimaryColour=&FFFF00&'",
+            '-vf', f"subtitles={subtitle_file}:force_style='FontName=Roboto,Alignment=2,MarginV=75,FontSize=14,Bold=1,PrimaryColour=&HFFFF&'",
             '-c:a', 'copy',
             output_file
         ]
@@ -185,51 +162,43 @@ def add_subtitles(video_path, subtitle_path, output_path):
     except subprocess.CalledProcessError as e:
         print(f"Error adding subtitles: {str(e)}")
     except Exception as e:
-        print(f"An unexpected error occurred: {str(e)}")
-# Main driver
-def main():
-    print("🎥 Step 1: Select input video")
-    input_path = f'C:\\Users\\pcofp\\Desktop\\Python\\{input("Enter the name of the unedited video : ").strip()}'
-    
-    if not input_path.endswith('.mp4'):
-        input_path += '.mp4'
-    
-    trimmed_output = f'C:\\Users\\pcofp\\Desktop\\Python\\temp\\{input("Enter what the name of the trimmed video should be : ").strip()}'
-    if not trimmed_output.endswith('.mp4'):
-        trimmed_output += '.mp4'
-    audio_path_temp = trimmed_output.replace('.mp4', '.mp3')
-    start = input("Start time (in seconds): ")
-    end = input("End time (in seconds): ")
-    cut_video(input_path, trimmed_output, start, end)
-    video_to_process = trimmed_output
-   
-    print("\n📐 Step 2: Reformating to 9:16 with face-tracking...")
-    reformatted_output = trimmed_output.replace('.mp4', '_reformatted.mp4')
-    if not reformatted_output.endswith('.mp4'):
-        reformatted_output += '.mp4'
-    process_video(video_to_process, reformatted_output)
+        print(f"Unexpected error: {str(e)}")
 
-    print("\n🎧 Step 3: Adding Audio")
-    
-    audio_path = audio_path_temp
-    combined_output = audio_path_temp.replace('.mp3', '_with_audio.mp4')
-    combine_video_audio(reformatted_output, audio_path, combined_output)
-    final_video_path = combined_output
+def process_all_segments():
+    executioner.segment_srt()
+    df = pd.read_csv('segments.csv')
 
-    print("\n📝 Step 4: Generating Subtitles")
+    df['Start'] = df['Start'].apply(lambda s: s if ':' in s else f"0:{s}")
+    df['End'] = df['End'].apply(lambda s: s if ':' in s else f"0:{s}")
+    df['Start_seconds'] = pd.to_timedelta(df['Start']).dt.total_seconds().astype(int)
+    df['End_seconds'] = pd.to_timedelta(df['End']).dt.total_seconds().astype(int)
 
-    subtitle_output = 'C:\\Users\\pcofp\\Desktop\\Python\\temp\\subtitles.srt'
-    generate_subtitles(final_video_path, subtitle_output)
+    input_video = f'C:\\Users\\pcofp\\Desktop\\Python\\{input("Enter the video file name: ")}.mp4'
 
-    print("\n🎬 Step 5: Finishing Makeup")
-  
-    video_with_subs_output = trimmed_output.replace('.mp4', '_done.mp4')
-    add_subtitles(final_video_path, subtitle_output, video_with_subs_output)
+    for idx, row in df.iterrows():
+        start = row['Start_seconds']
+        end = row['End_seconds']
 
-    print("\n✅ Video Completed Successfully!")
+        print(f"\n--- Processing Segment {idx} | {start}s to {end}s ---")
+
+        base_path = f'C:\\Users\\pcofp\\Desktop\\Python\\temp\\segment_{idx}'
+        trimmed_output = base_path + '.mp4'
+        reformatted_output = base_path + '_reformatted.mp4'
+        audio_path = base_path + '.mp3'
+        combined_output = base_path + '_with_audio.mp4'
+        subtitle_path = base_path + '.srt'
+        final_output = base_path + '_final.mp4'
+
+        cut_video(input_video, trimmed_output, start, end)
+        process_video(trimmed_output, reformatted_output)
+        combine_video_audio(reformatted_output, audio_path, combined_output)
+        generate_subtitles(combined_output, subtitle_path)
+        add_subtitles(combined_output, subtitle_path, final_output)
+
+    print("\n✅ All segments processed successfully.")
 
 if __name__ == "__main__":
     try:
-        main()
+        process_all_segments()
     except Exception as e:
-        print(f"❌ An error occurred: {e}")
+        print(f"❌ Fatal error: {e}")
