@@ -9,7 +9,6 @@ import os
 import subprocess
 import executioner
 
-
 # AssemblyAI API Key
 aai.settings.api_key = ''
 
