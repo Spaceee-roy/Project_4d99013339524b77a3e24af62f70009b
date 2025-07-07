@@ -11,12 +11,12 @@ import executioner
 
 
 # AssemblyAI API Key
-aai.settings.api_key = '4d99013339524b77a3e24af62f70009b'
+aai.settings.api_key = ''
 
 def print_progress_bar(iteration, total, prefix='', suffix='', length=10):
     percent = f"{100 * (iteration / float(total)):.1f}"
     filled_length = int(length * iteration // total)
-    bar = '☻' * filled_length + '☺' * (length - filled_length)
+    bar = '█' * filled_length + '•' * (length - filled_length)
     print(f'\r{prefix} |{bar}| {percent}% {suffix}', end='')
     if iteration == total:
         print()
@@ -70,7 +70,7 @@ def process_video(video_path, output_path):
             timestamps.append(current_time)
 
         frame_count += 1
-        print_progress_bar(frame_count, total_frames, prefix='Progress', suffix='Complete', length=20)
+        print_progress_bar(frame_count, total_frames, prefix='Progress', suffix='Complete', length=100)
 
     video_capture.release()
     df = pd.DataFrame({'Timestamp': timestamps, 'Face_X_Position': face_x_positions}).bfill()
@@ -86,7 +86,7 @@ def process_video(video_path, output_path):
     out = None
     frame_count = 0
     last_center = None
-    print_progress_bar(0, total_frames, prefix='Progress', suffix='Complete', length=40)
+    print_progress_bar(0, total_frames, prefix='Progress', suffix='Complete', length=100)
 
     while True:
         ret, frame = video_capture.read()
@@ -117,7 +117,7 @@ def process_video(video_path, output_path):
         except Exception as e:
             print(f"Error on frame {frame_count}: {e}")
         frame_count += 1
-        print_progress_bar(frame_count, total_frames, prefix='Progress', suffix='Complete', length=20)
+        print_progress_bar(frame_count, total_frames, prefix='Progress', suffix='Complete', length=100)
 
     if out:
         out.release()
@@ -144,7 +144,7 @@ def combine_video_audio(video_path, audio_path, output_path):
         print(f"Error combining video and audio: {e}")
 
 def generate_subtitles(video_path, subtitle_path):
-    print("Transcribing audio...")
+    print("🎧 Transcribing audio...")
     transcriber = aai.Transcriber(config=aai.TranscriptionConfig(speech_model=aai.SpeechModel.nano))
     transcript = transcriber.transcribe(video_path)
     subtitles = transcript.export_subtitles_srt()
