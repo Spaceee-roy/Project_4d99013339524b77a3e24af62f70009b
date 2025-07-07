@@ -8,7 +8,7 @@ import assemblyai as aai
 import os
 import subprocess
 import executioner
-import time
+
 
 # AssemblyAI API Key
 aai.settings.api_key = '4d99013339524b77a3e24af62f70009b'
@@ -26,12 +26,15 @@ def cut_video(input_path, output_path, start_time, end_time):
     end_time = float(end_time)
     try:
         with VideoFileClip(input_path) as video:
-            cut_video = video.subclipped(start_time, end_time)
+            cut_clip = video.subclipped(start_time, end_time)
+            cut_clip.write_videofile(output_path, codec="libx264", audio_codec='aac')
+
+            # Explicitly export audio from trimmed clip
             audio_path = output_path.replace('.mp4', '.mp3')
-            cut_video.audio.write_audiofile(audio_path)
-            cut_video.write_videofile(output_path, codec="libx264")
+            cut_clip.audio.write_audiofile(audio_path)
     except Exception as e:
         print(f"Error in cut_video: {e}")
+
 
 def process_video(video_path, output_path):
     video_capture = cv2.VideoCapture(video_path)
