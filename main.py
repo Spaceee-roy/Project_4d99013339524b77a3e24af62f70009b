@@ -11,7 +11,7 @@ import executioner
 
 
 # AssemblyAI API Key
-aai.settings.api_key = '4d99013339524b77a3e24af62f70009b'
+aai.settings.api_key = ''
 
 def print_progress_bar(iteration, total, prefix='', suffix='', length=10):
     percent = f"{100 * (iteration / float(total)):.1f}"
