@@ -9,8 +9,9 @@ import os
 import subprocess
 import executioner
 
+
 # AssemblyAI API Key
-aai.settings.api_key = ''
+aai.settings.api_key = '4d99013339524b77a3e24af62f70009b'
 
 def print_progress_bar(iteration, total, prefix='', suffix='', length=10):
     percent = f"{100 * (iteration / float(total)):.1f}"
@@ -126,15 +127,24 @@ def process_video(video_path, output_path):
 
 def combine_video_audio(video_path, audio_path, output_path):
     try:
-        video = VideoFileClip(video_path)
-        audio = AudioFileClip(audio_path)
-        video.audio = audio
-        video.write_videofile(output_path, codec='libx264', audio_codec='aac')
+        command = [
+        'ffmpeg',
+        '-i', video_path,
+        '-i', audio_path,
+        '-c:v', 'copy',
+        '-c:a', 'aac',
+        '-strict', 'experimental',
+        '-map', '0:v:0',
+        '-map', '1:a:0',
+        '-shortest',
+        output_path
+    ]
+        subprocess.run(command, check=True)
     except Exception as e:
         print(f"Error combining video and audio: {e}")
 
 def generate_subtitles(video_path, subtitle_path):
-    print("🎧 Transcribing audio...")
+    print("Transcribing audio...")
     transcriber = aai.Transcriber(config=aai.TranscriptionConfig(speech_model=aai.SpeechModel.nano))
     transcript = transcriber.transcribe(video_path)
     subtitles = transcript.export_subtitles_srt()
@@ -196,7 +206,11 @@ def process_all_segments():
         combine_video_audio(reformatted_output, audio_path, combined_output)
         generate_subtitles(combined_output, subtitle_path)
         add_subtitles(combined_output, subtitle_path, final_output)
-
+        os.remove(trimmed_output)
+        os.remove(reformatted_output)
+        os.remove(audio_path)
+        os.remove(combined_output)
+        os.remove(subtitle_path)
     print("\n✅ All segments processed successfully.")
 
 if __name__ == "__main__":
