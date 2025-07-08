@@ -176,8 +176,9 @@ def add_subtitles(video_path, subtitle_path, output_path):
     except Exception as e:
         print(f"Unexpected error: {str(e)}")
 
-def process_all_segments():
-    executioner.segment_srt()
+def process_all_segments(filepath: str):
+    filepath = input("SRT file name: ")
+    executioner.segment_srt_pipeline(filepath)
     df = pd.read_csv('segments.csv')
 
     df['Start'] = df['Start'].apply(lambda s: s if ':' in s else f"0:{s}")
