@@ -11,7 +11,7 @@ import executioner
 
 
 # AssemblyAI API Key
-aai.settings.api_key = '4d99013339524b77a3e24af62f70009b'
+aai.settings.api_key = ''
 
 def print_progress_bar(iteration, total, prefix='', suffix='', length=10):
     percent = f"{100 * (iteration / float(total)):.1f}"
@@ -206,7 +206,7 @@ def add_subtitles(video_path, subtitle_path, output_path):
     except Exception as e:
         print(f"Unexpected error: {str(e)}")
 
-def process_all_segments(filepath: str):
+def process_all_segments():
     filepath = input("SRT file name: ")
     executioner.segment_srt_pipeline(filepath)
     df = pd.read_csv('segments.csv')
@@ -216,7 +216,7 @@ def process_all_segments(filepath: str):
     df['Start_seconds'] = pd.to_timedelta(df['Start']).dt.total_seconds().astype(int)
     df['End_seconds'] = pd.to_timedelta(df['End']).dt.total_seconds().astype(int)
 
-    input_video = f'C:\\Users\\pcofp\\Desktop\\Python\\{input("Enter the video file name: ")}.mp4'
+    input_video = f'C:\\Users\\pcofp\\Desktop\\Python\\{input("Enter the video file name: ")}'
 
     for idx, row in df.iterrows():
         start = row['Start_seconds']
