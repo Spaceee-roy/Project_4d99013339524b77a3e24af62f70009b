@@ -30,20 +30,22 @@ def load_models() -> Tuple[spacy.language.Language, SentenceTransformer, KeyBERT
     embed_model = SentenceTransformer("all-mpnet-base-v2").to(device)
     kw_model = KeyBERT(model=embed_model)
     return nlp, embed_model, kw_model, device
+
 def load_subtitles(file_path: str, nlp) -> Tuple[List[Dict], List[int]]:
+    
     """
     Load subtitles and merge into full grammatical sentences using spaCy.
     Keeps original casing/punctuation and ensures no sentence is cut in half.
     
     Returns:
         sentence_entries: List of dicts with full sentence text and timestamps.
-        subtitle_start_indices: Indices marking first sentence of each subtitle (approximate).
+        subtitle_start_indices: Indices of sentences that begin a subtitle.
     """
     subs = pysrt.open(file_path, encoding='utf-8')
 
-    # Step 1: Build full transcript with map to original subtitle spans
+    # Step 1: Build full transcript and track subtitle spans
     full_text = ""
-    index_map = []  # List of (char_start, char_end, start_time, end_time)
+    index_map = []  # (char_start, char_end, start_time, end_time)
     current_char = 0
 
     for sub in subs:
@@ -54,25 +56,24 @@ def load_subtitles(file_path: str, nlp) -> Tuple[List[Dict], List[int]]:
         full_text += text + " "
         current_char += len(text) + 1
 
-    # Step 2: Use spaCy to extract full grammatical sentences
+    # Step 2: Extract full grammatical sentences
     doc = nlp(full_text.strip())
     sentence_entries = []
-    subtitle_start_indices = []
+    sentence_spans = []  # (start_char, end_char) for each sentence
 
-    for i, sent in enumerate(doc.sents):
+    for sent in doc.sents:
         sent_text = sent.text.strip()
         sent_start = sent.start_char
         sent_end = sent.end_char
 
-        # Step 3: Determine the timestamp range for this full sentence
+        # Determine time range
         sentence_start_time = None
         sentence_end_time = None
-
-        for start_idx, end_idx, start_time, end_time in index_map:
-            if start_idx <= sent_start < end_idx and sentence_start_time is None:
-                sentence_start_time = start_time
-            if start_idx < sent_end <= end_idx:
-                sentence_end_time = end_time
+        for idx_start, idx_end, t_start, t_end in index_map:
+            if idx_start <= sent_start < idx_end and sentence_start_time is None:
+                sentence_start_time = t_start
+            if idx_start < sent_end <= idx_end:
+                sentence_end_time = t_end
                 break
 
         # Fallbacks
@@ -86,11 +87,21 @@ def load_subtitles(file_path: str, nlp) -> Tuple[List[Dict], List[int]]:
             "start": sentence_start_time,
             "end": sentence_end_time
         })
+        sentence_spans.append((sent_start, sent_end))
 
-        subtitle_start_indices.append(i)
+    # Step 3: Compute subtitle_start_indices
+    subtitle_start_indices = []
+    for idx_start, _, _, _ in index_map:
+        # Find the first sentence that overlaps this subtitle's starting character
+        for i, (s_start, s_end) in enumerate(sentence_spans):
+            if s_start <= idx_start < s_end:
+                subtitle_start_indices.append(i)
+                break
+        else:
+            # If no match (unlikely), fallback to last sentence
+            subtitle_start_indices.append(len(sentence_entries) - 1)
 
     return sentence_entries, subtitle_start_indices
-
 
 
 def time_to_datetime(t: datetime.time) -> datetime:
