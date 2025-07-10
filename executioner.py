@@ -32,54 +32,69 @@ def load_models() -> Tuple[spacy.language.Language, SentenceTransformer, KeyBERT
     return nlp, embed_model, kw_model, device
 def load_subtitles(file_path: str, nlp) -> Tuple[List[Dict], List[int]]:
     """
-    Load and clean subtitles into full, capitalized sentences with correct punctuation and timestamps.
+    Load and merge subtitle text into complete sentences using spaCy, preserving accurate timestamps.
 
     Returns:
-        sentence_entries: List of dicts with cleaned sentence text and timestamps.
-        subtitle_start_indices: List of indices marking the first sentence of each subtitle.
+        sentence_entries: List of dicts with clean sentence text and start/end times.
+        subtitle_start_indices: Indices marking the first sentence of each subtitle block.
     """
     subs = pysrt.open(file_path, encoding='utf-8')
-    sentence_entries = []
-    subtitle_start_indices = []
-    sentence_idx = 0
 
-    buffer_text = ""
-    buffer_start = None
+    # Combine all subtitles into a single string while tracking character ranges
+    full_text = ""
+    index_map = []  # List of (start_char_idx, end_char_idx, start_time, end_time)
+    current_char = 0
 
     for sub in subs:
-        doc = nlp(sub.text_without_tags)
+        text = sub.text_without_tags.strip().replace('\n', ' ')
+        start = current_char
+        end = current_char + len(text)
+        index_map.append((start, end, sub.start.to_time(), sub.end.to_time()))
+        full_text += text + " "  # add space between subtitle blocks
+        current_char += len(text) + 1
 
-        for sent in doc.sents:
-            text = sent.text.strip()
+    # Use spaCy to split full text into proper sentences
+    doc = nlp(full_text.strip())
+    sentence_entries = []
+    subtitle_start_indices = []
 
-            # Capitalize first word
-            if text:
-                text = text[0].upper() + text[1:]
+    for i, sent in enumerate(doc.sents):
+        sent_text = sent.text.strip()
 
-            # Ensure it ends with a period
-            if text and not text.endswith(('.', '!', '?')):
-                text += '.'
+        # Capitalize first word
+        if sent_text:
+            sent_text = sent_text[0].upper() + sent_text[1:]
 
-            if buffer_text:
-                # Continuation of a previous sentence — join and keep old start time
-                buffer_text += " " + text
-                end_time = sub.end.to_time()
-                sentence_entries[-1]["text"] = buffer_text
-                sentence_entries[-1]["end"] = end_time
-            else:
-                buffer_text = text
-                buffer_start = sub.start.to_time()
-                end_time = sub.end.to_time()
-                sentence_entries.append({
-                    "text": buffer_text,
-                    "start": buffer_start,
-                    "end": end_time
-                })
-                subtitle_start_indices.append(sentence_idx)
-                sentence_idx += 1
+        # Ensure ending punctuation
+        if not sent_text.endswith(('.', '!', '?')):
+            sent_text += '.'
 
-            # Clear buffer
-            buffer_text = ""
+        sent_start = sent.start_char
+        sent_end = sent.end_char
+
+        # Find timestamps covering the sentence range
+        sentence_start_time = None
+        sentence_end_time = None
+        for start_idx, end_idx, start_time, end_time in index_map:
+            if start_idx <= sent_start < end_idx and sentence_start_time is None:
+                sentence_start_time = start_time
+            if start_idx < sent_end <= end_idx:
+                sentence_end_time = end_time
+                break
+
+        # Fallback in case we can't match precisely
+        if sentence_start_time is None:
+            sentence_start_time = index_map[0][2]
+        if sentence_end_time is None:
+            sentence_end_time = index_map[-1][3]
+
+        sentence_entries.append({
+            "text": sent_text,
+            "start": sentence_start_time,
+            "end": sentence_end_time
+        })
+
+        subtitle_start_indices.append(i)
 
     return sentence_entries, subtitle_start_indices
 
