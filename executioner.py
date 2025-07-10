@@ -313,9 +313,9 @@ def segment_srt_pipeline(
     output_path = "segments.csv"
     save_segments_to_csv(segments, output_path)
 
-    print("Segments:")
-    for segment in segments:
-        print(f"Segment {segment['Segment']}: {segment['Preview']}")
+    # print("Segments:")
+    # for segment in segments:
+    #     print(f"Segment {segment['Segment']}: {segment['Preview']}")
 
 if __name__ == "__main__":
     file_path = input("Enter SRT file path: ").strip()
