@@ -56,7 +56,7 @@ def cut_video(input_path, output_path, start_time, end_time):
         print(f"[cut_video] ❌ Unexpected error: {e}")
 
 
-def process_video(video_path, output_path, detection_interval=0.5):
+def process_video(video_path, output_path):
     video_capture = cv2.VideoCapture(video_path)
     if not video_capture.isOpened():
         raise Exception("Could not open video file")
@@ -66,86 +66,62 @@ def process_video(video_path, output_path, detection_interval=0.5):
     frame_height = int(video_capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
     total_frames = int(video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    detection_interval_frames = int(fps * detection_interval)
-
-    # Target aspect ratio 9:16 (width:height)
-    new_height = frame_height
-    new_width = int((9 / 16) * new_height)
-
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = None
-
-    tracker = None
+    face_x_positions, timestamps = [], []
     last_x = None
-    timestamps = []
-    face_x_positions = []
+    frame_count = 0
+    print("Phase 1: Detecting faces...")
 
-    print_progress_bar(0, total_frames, prefix='Progress', suffix='Complete', length=100)
-
-    # PHASE 1: Face detection + tracking & logging
-    frame_idx = 0
     while True:
         ret, frame = video_capture.read()
         if not ret:
             break
 
-        current_time = frame_idx / fps
-        center_x = None
-
-        if frame_idx % detection_interval_frames == 0 or tracker is None:
-            rgb_frame = frame[:, :, ::-1]  # BGR to RGB for face_recognition
-            face_locations = face_recognition.face_locations(rgb_frame)
-
+        current_time = frame_count / fps
+        if len(timestamps) == 0 or (current_time - timestamps[-1] >= 0.6):
+            face_locations = face_recognition.face_locations(frame)
             if face_locations:
                 top, right, bottom, left = face_locations[0]
-                center_x = (left + right) // 2
-                tracker = cv2.TrackerKCF_create()
-                tracker.init(frame, (left, top, right - left, bottom - top))
+                center_x = (right + left) // 2
+                last_x = center_x
             else:
-                tracker = None
-        else:
-            success, bbox = tracker.update(frame)
-            if success:
-                x, y, w, h = [int(v) for v in bbox]
-                center_x = x + w // 2
+                center_x = last_x if last_x is not None else None
 
-        if center_x is None:
-            center_x = last_x if last_x is not None else frame_width // 2
-        else:
-            last_x = center_x
+            face_x_positions.append(center_x)
+            timestamps.append(current_time)
 
-        face_x_positions.append(center_x)
-        timestamps.append(current_time)
-
-        frame_idx += 1
-        print_progress_bar(frame_idx, total_frames, prefix='Progress', suffix='Complete', length=100)
+        frame_count += 1
+        print_progress_bar(frame_count, total_frames, prefix='Progress', suffix='Complete', length=100)
 
     video_capture.release()
+    df = pd.DataFrame({'Timestamp': timestamps, 'Face_X_Position': face_x_positions}).bfill()
+    df.to_csv('face_positions.csv', index=False)
 
-    # Interpolate face positions for smooth cropping
-    interpolator = interp1d(timestamps, face_x_positions, kind='cubic', fill_value='extrapolate')
-
-    # PHASE 2: Reopen video to crop frames centered on face
+    print("Phase 2: Reformatting video...")
     video_capture = cv2.VideoCapture(video_path)
-    frame_idx = 0
-    last_center = None
-    out = None
+    interpolator = interp1d(df['Timestamp'], df['Face_X_Position'], kind='cubic', fill_value='extrapolate')
 
-    print_progress_bar(0, total_frames, prefix='Cropping', suffix='Complete', length=100)
+    new_height = frame_height
+    new_width = int((9/16) * new_height)
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = None
+    frame_count = 0
+    last_center = None
+    print_progress_bar(0, total_frames, prefix='Progress', suffix='Complete', length=100)
 
     while True:
         ret, frame = video_capture.read()
         if not ret:
             break
 
-        current_time = frame_idx / fps
+        current_time = frame_count / fps
         try:
             x_position = interpolator(current_time)
             crop_center = int(x_position if not np.isnan(x_position) else last_center or frame_width // 2)
             last_center = crop_center
 
-            crop_left = max(0, crop_center - new_width // 2)
+            crop_left = max(0, crop_center - new_width//2)
             crop_right = min(frame_width, crop_left + new_width)
+
             if crop_right - crop_left < new_width:
                 crop_left = max(0, crop_right - new_width)
 
@@ -157,22 +133,18 @@ def process_video(video_path, output_path, detection_interval=0.5):
                 out = cv2.VideoWriter(output_path, fourcc, fps, (new_width, new_height))
 
             out.write(cropped_frame)
-        except Exception as e:
-            print(f"Error cropping frame {frame_idx}: {e}")
 
-        frame_idx += 1
-        print_progress_bar(frame_idx, total_frames, prefix='Cropping', suffix='Complete', length=100)
+        except Exception as e:
+            print(f"Error on frame {frame_count}: {e}")
+        frame_count += 1
+        print_progress_bar(frame_count, total_frames, prefix='Progress', suffix='Complete', length=100)
 
     if out:
         out.release()
     video_capture.release()
     cv2.destroyAllWindows()
+    print("✅ Video reformatted and saved!")
 
-    # Save the tracked positions (optional)
-    df = pd.DataFrame({'Timestamp': timestamps, 'Face_X_Position': face_x_positions}).bfill()
-    df.to_csv('face_positions.csv', index=False)
-
-    print("✅ Video processed, cropped, and saved!")
 
 
 def combine_video_audio(video_path, audio_path, output_path):
