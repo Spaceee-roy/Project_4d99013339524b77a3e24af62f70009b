@@ -21,19 +21,39 @@ def print_progress_bar(iteration, total, prefix='', suffix='', length=10):
     if iteration == total:
         print()
 
-def cut_video(input_path, output_path, start_time, end_time):
-    start_time = float(start_time)
-    end_time = float(end_time)
-    try:
-        with VideoFileClip(input_path) as video:
-            cut_clip = video.subclipped(start_time, end_time)
-            cut_clip.write_videofile(output_path, codec="libx264", audio_codec='aac')
 
-            # Explicitly export audio from trimmed clip
-            audio_path = output_path.replace('.mp4', '.mp3')
-            cut_clip.audio.write_audiofile(audio_path)
+def cut_video(input_path, output_path, start_time, end_time):
+    try:
+        # Trim video with accurate timestamps (frame-accurate)
+        trim_command = [
+            "ffmpeg", "-y",
+            "-i", input_path,
+            "-ss", str(start_time),
+            "-to", str(end_time),
+            "-c:v", "libx264",
+            "-c:a", "aac",
+            "-strict", "experimental",
+            output_path
+        ]
+        subprocess.run(trim_command, check=True)
+        print(f"[cut_video] ✅ Video trimmed: {output_path}")
+
+        # Extract audio separately to MP3
+        audio_path = output_path.replace('.mp4', '.mp3')
+        audio_command = [
+            "ffmpeg", "-y",
+            "-i", output_path,
+            "-q:a", "0",
+            "-map", "a",
+            audio_path
+        ]
+        subprocess.run(audio_command, check=True)
+        print(f"[cut_video] 🎧 Audio extracted: {audio_path}")
+
+    except subprocess.CalledProcessError as e:
+        print(f"[cut_video] ❌ ffmpeg error: {e}")
     except Exception as e:
-        print(f"Error in cut_video: {e}")
+        print(f"[cut_video] ❌ Unexpected error: {e}")
 
 
 def process_video(video_path, output_path, detection_interval=0.5):
