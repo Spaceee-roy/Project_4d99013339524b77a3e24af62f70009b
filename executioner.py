@@ -30,39 +30,60 @@ def load_models() -> Tuple[spacy.language.Language, SentenceTransformer, KeyBERT
     embed_model = SentenceTransformer("all-mpnet-base-v2").to(device)
     kw_model = KeyBERT(model=embed_model)
     return nlp, embed_model, kw_model, device
-
 def load_subtitles(file_path: str, nlp) -> Tuple[List[Dict], List[int]]:
     """
-    Load and split subtitles into sentences with timing info.
-
-    Args:
-        file_path: Path to SRT file.
-        nlp: Spacy NLP model.
+    Load and clean subtitles into full, capitalized sentences with correct punctuation and timestamps.
 
     Returns:
-        sentence_entries: List of dicts with sentence text and timestamps.
-        subtitle_start_indices: List of indices marking first sentence of each subtitle.
+        sentence_entries: List of dicts with cleaned sentence text and timestamps.
+        subtitle_start_indices: List of indices marking the first sentence of each subtitle.
     """
     subs = pysrt.open(file_path, encoding='utf-8')
     sentence_entries = []
     subtitle_start_indices = []
     sentence_idx = 0
 
+    buffer_text = ""
+    buffer_start = None
+
     for sub in subs:
         doc = nlp(sub.text_without_tags)
-        first_sentence = True
+
         for sent in doc.sents:
-            if first_sentence:
+            text = sent.text.strip()
+
+            # Capitalize first word
+            if text:
+                text = text[0].upper() + text[1:]
+
+            # Ensure it ends with a period
+            if text and not text.endswith(('.', '!', '?')):
+                text += '.'
+
+            if buffer_text:
+                # Continuation of a previous sentence — join and keep old start time
+                buffer_text += " " + text
+                end_time = sub.end.to_time()
+                sentence_entries[-1]["text"] = buffer_text
+                sentence_entries[-1]["end"] = end_time
+            else:
+                buffer_text = text
+                buffer_start = sub.start.to_time()
+                end_time = sub.end.to_time()
+                sentence_entries.append({
+                    "text": buffer_text,
+                    "start": buffer_start,
+                    "end": end_time
+                })
                 subtitle_start_indices.append(sentence_idx)
-                first_sentence = False
-            sentence_entries.append({
-                "text": sent.text.strip(),
-                "start": sub.start.to_time(),
-                "end": sub.end.to_time()
-            })
-            sentence_idx += 1
+                sentence_idx += 1
+
+            # Clear buffer
+            buffer_text = ""
 
     return sentence_entries, subtitle_start_indices
+
+
 
 def time_to_datetime(t: datetime.time) -> datetime:
     """
@@ -228,10 +249,10 @@ def save_segments_to_csv(segments: List[Dict], output_path: str):
 
 def segment_srt_pipeline(
     file_path: str,
-    dynamic_std_factor: float = 1.1,
+    dynamic_std_factor: float = 1.5,
     time_gap_threshold: float = 2.5,
-    min_sentences: int = 2,
-    min_duration: int = 5,
+    min_sentences: int = 3,
+    min_duration: int = 10,
 ):
     """
     Main pipeline to process an SRT file and generate segmented CSV output.
@@ -243,6 +264,7 @@ def segment_srt_pipeline(
         min_sentences: Minimum sentences per segment.
         min_duration: Minimum segment length in seconds.
     """
+    
     nlp, embed_model, kw_model, device = load_models()
     sentence_entries, subtitle_start_indices = load_subtitles(file_path, nlp)
     sentences = [entry["text"] for entry in sentence_entries]
@@ -278,4 +300,5 @@ def segment_srt_pipeline(
 
 if __name__ == "__main__":
     file_path = input("Enter SRT file path: ").strip()
+    
     segment_srt_pipeline(file_path)
