@@ -32,49 +32,42 @@ def load_models() -> Tuple[spacy.language.Language, SentenceTransformer, KeyBERT
     return nlp, embed_model, kw_model, device
 def load_subtitles(file_path: str, nlp) -> Tuple[List[Dict], List[int]]:
     """
-    Load and merge subtitle text into complete sentences using spaCy, preserving accurate timestamps.
-
+    Load subtitles and merge into full grammatical sentences using spaCy.
+    Keeps original casing/punctuation and ensures no sentence is cut in half.
+    
     Returns:
-        sentence_entries: List of dicts with clean sentence text and start/end times.
-        subtitle_start_indices: Indices marking the first sentence of each subtitle block.
+        sentence_entries: List of dicts with full sentence text and timestamps.
+        subtitle_start_indices: Indices marking first sentence of each subtitle (approximate).
     """
     subs = pysrt.open(file_path, encoding='utf-8')
 
-    # Combine all subtitles into a single string while tracking character ranges
+    # Step 1: Build full transcript with map to original subtitle spans
     full_text = ""
-    index_map = []  # List of (start_char_idx, end_char_idx, start_time, end_time)
+    index_map = []  # List of (char_start, char_end, start_time, end_time)
     current_char = 0
 
     for sub in subs:
-        text = sub.text_without_tags.strip().replace('\n', ' ')
+        text = sub.text_without_tags.strip().replace("\n", " ")
         start = current_char
         end = current_char + len(text)
         index_map.append((start, end, sub.start.to_time(), sub.end.to_time()))
-        full_text += text + " "  # add space between subtitle blocks
+        full_text += text + " "
         current_char += len(text) + 1
 
-    # Use spaCy to split full text into proper sentences
+    # Step 2: Use spaCy to extract full grammatical sentences
     doc = nlp(full_text.strip())
     sentence_entries = []
     subtitle_start_indices = []
 
     for i, sent in enumerate(doc.sents):
         sent_text = sent.text.strip()
-
-        # Capitalize first word
-        if sent_text:
-            sent_text = sent_text[0].upper() + sent_text[1:]
-
-        # Ensure ending punctuation
-        if not sent_text.endswith(('.', '!', '?')):
-            sent_text += '.'
-
         sent_start = sent.start_char
         sent_end = sent.end_char
 
-        # Find timestamps covering the sentence range
+        # Step 3: Determine the timestamp range for this full sentence
         sentence_start_time = None
         sentence_end_time = None
+
         for start_idx, end_idx, start_time, end_time in index_map:
             if start_idx <= sent_start < end_idx and sentence_start_time is None:
                 sentence_start_time = start_time
@@ -82,7 +75,7 @@ def load_subtitles(file_path: str, nlp) -> Tuple[List[Dict], List[int]]:
                 sentence_end_time = end_time
                 break
 
-        # Fallback in case we can't match precisely
+        # Fallbacks
         if sentence_start_time is None:
             sentence_start_time = index_map[0][2]
         if sentence_end_time is None:
