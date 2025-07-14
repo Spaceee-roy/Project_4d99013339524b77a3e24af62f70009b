@@ -1,1 +1,13 @@
-
+opencv-python
+textblob
+transformers
+pysrt
+spacy
+sentence_transformers
+keybert
+datetime
+torch
+pandas
+scikit-learn
+scipy
+assemblyai
