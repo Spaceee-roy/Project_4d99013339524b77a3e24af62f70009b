@@ -11,21 +11,114 @@ from typing import List, Dict, Tuple
 from textblob import TextBlob
 from transformers import pipeline
 
+# --- Constants ---
 DISCOURSE_MARKERS = {
     "however", "anyway", "so", "but", "nevertheless", "still", "though",
     "instead", "on the other hand"
 }
 
 EDUCATIONAL_KEYWORDS = {
-    "explain", "reason", "because", "process", "method", "fact", "data", "research", "study"
+    "explain", "reason", "because", "process", "method", "fact", "data", "research", "study", "question"
+}
+
+QNA_WORDS = {
+    "what", "why", "how", "when", "where", "who", "which", "whom", "whose", "is", "are", "do", "does", "did", "can", "could", "should", "would"
 }
 
 STORY_KEYWORDS = {
     "once", "happened", "remember", "told", "story", "experience", "felt", "saw", "heard",
     "when i", "then", "after that"
 }
+KEYWORDS = {
+    "fission", "fusion", "space", "time", "universe", "I know", "i know", "mars", "aliens", "humans", "mind", "sky", "stars", "star",
+"black hole", "quantum", "energy", "light", "darkness", "galaxy", "planets", "moon", "sun", "gravity", "science", "wormhole", "nebula", "cosmos", "dimensions",
+"parallel", "reality", "simulation", "AI", "robots", "machine", "future", "technology", "deep space", "NASA", "spacex", "rocket", "astrophysics", "astronomy", "intelligence",
+"brain", "thoughts", "consciousness", "dreams", "theory", "Einstein", "relativity", "expansion", "atoms", "molecules", "matter", "antimatter", "big bang", "collapse", "infinity",
+"mystery", "exploration", "journey", "alien life", "terraform", "extraterrestrial", "civilization", "time travel", "teleport", "wormholes", "event horizon", "multiverse", "lightyears",
+"truth", "unknown", "beyond", "curiosity", "knowledge", "awakening", "discovery", "experiment", "reality check", "dimensions", "string theory", "particles", "observer", "existence",
+"eternal", "void", "creation", "beginning", "end", "evolution", "species", "lifeforms", "intelligent life", "cybernetics", "biohack", "space-time", "perception", "simulation theory",
+"neural", "singularity", "nanotech", "augmented", "virtual", "metaverse", "uplift", "alien tech", "spaceship", "hover", "orb", "probe", "astro", "launch", "explosion",
+"impact", "asteroid", "comet", "solar", "eclipse", "crater", "mission", "explore", "colonize", "interstellar", "galactic", "observatory", "hubble", "james webb", "andromeda",
+"drake equation", "fermi paradox", "SETI", "signal", "decoded", "message", "ancient", "timeline", "hyperdrive", "warp", "hyperspace", "bioengineer", "cyberpunk", "dystopia",
+"android", "spacesuit", "gravity waves", "black matter", "dark energy", "quasar", "pulsar", "magnetar", "xenon", "exo", "astrobiology", "DNA", "CRISPR", "terraforming",
+"habitable", "exo planet", "milky way", "supernova", "nova", "light speed", "tachyon", "future tech", "sci-fi", "intergalactic", "astro traveler", "bio life", "machine learning",
+"thought control", "brain waves", "cyber brain", "upload", "brain chip", "neuron", "synapse", "bio data", "alien DNA", "genome", "mutation", "cosmic", "planet x", "satellite",
+"signals", "broadcast", "solar system", "timeline", "space walk", "zero gravity", "oxygen", "habitat", "moon base", "mars base", "explorer", "starlight", "unidentified",
+"craft", "energy source", "magnetic", "quantum field", "singularity", "deep mind", "inception", "truth seeker", "AI core", "space race", "launch pad", "orbital", "celestial",
+"rocket fuel", "mission control", "space junk", "microgravity", "deep thought", "space anomaly", "telescope", "explore more", "beyond limits", "infinite loop", "paradox", "emotion", "race", "racism", "racist", "war", "peace", "alien", "sentient", "origin", "invasion", "colonization", "species x", "galactic war", "first contact", "classified", "encrypted", "decoded signal",
+"broadcast signal", "intercepted", "quantum leap", "space-time rip", "dark web", "nanoparticles", "cognition", "neuroplasticity", "intellect", "psychic",
+"mental", "telepathy", "telekinesis", "dimensions fold", "rift", "portal", "plasma", "ion", "fusion core", "power surge",
+"solar flare", "corona", "photosphere", "exoplanet", "red giant", "white dwarf", "neutron star", "gamma rays", "infrared", "radiation",
+"energy burst", "cosmic dust", "dark zone", "hyperreality", "mirror dimension", "event", "cause", "effect", "time loop", "temporal shift",
+"mind loop", "false memory", "dream state", "lucid", "awakening code", "bio signal", "life code", "empathy", "emotion AI", "bio tech",
+"cyber system", "dream tech", "memory chip", "identity", "soul", "artificial mind", "core AI", "emotional data", "machine soul", "android emotion",
+"cloning", "rebirth", "replicant", "matrix", "mainframe", "data stream", "conscious AI", "brain print", "soul transfer", "digital twin",
+"mind hack", "code injection", "spirit", "ghost", "ghost in machine", "ancestors", "ancient tech", "advanced race", "lost planet", "forgotten world",
+"artifact", "crashed ship", "first traveler", "alien war", "cosmic war", "destroyer", "creator", "origin myth", "simulation glitch", "time glitch",
+"space fold", "quantum entanglement", "observer effect", "atomic time", "deep field", "light cone", "superintelligence", "bio circuit", "hive mind", "singular mind",
+"collective", "post-human", "neo-human", "transcend", "post-Earth", "exo-society", "interplanetary", "star system", "voidwalkers", "truth code",
+"transmission", "frequency", "mind frequency", "planetary AI", "ancient ruins", "time capsule", "forbidden knowledge", "infinite minds", "ultra being", "divine tech",
+"beyond physics", "the unknown", "psi energy", "noosphere", "hologram", "data sphere", "universal memory", "eternity", "deep scan", "starlink",
+"terraformed", "space gods", "immortality", "afterlife", "next life", "reincarnation", "timeline merge", "space station", "edge of universe", "quantum fabric",
+"reality distortion", "mind expansion", "core truth", "origin code", "machine god", "neural link", "dimensional travel", "void tech", "parallel world", "alien message",
+"galactic empire", "universe reset", "simulation crash", "cosmic code", "hidden reality", "multi-self", "mirror soul", "truth loop", "fate", "destiny",
+"control", "resistance", "harmony", "chaos", "balance", "power", "fear", "love", "hate", "survival",
+"instinct", "gene code", "epigenetics", "ancestral memory", "primal", "biotech war", "cultural collapse", "techno cult", "digital religion", "space religion",
+"creator beings", "genesis", "last civilization", "digital extinction", "AI uprising", "planetfall", "terraform protocol", "AI laws", "prime directive", "dimension gate",
+"hyper space", "emotional core", "conscious core", "dark signal", "omega code", "AI prophecy", "bio-robot", "planetary core", "inner universe", "spatial shift",
+"void scream", "intelligent virus", "bio invasion", "quantum AI", "network mind", "edge consciousness", "interdimensional", "reality break", "alien whisper", "reality warp", "comedy", "stand-up", "storytime", "humor", "improv", "JRE", "Young Sheldon", "sitcom", "nerdy", "family", "brains", "genius", "physics", "math", "science", "education", "geek", "curiosity",
+"astronomy", "astrophysics", "cosmic", "space travel", "aliens", "UFO", "extraterrestrial", "Bigfoot", "paranormal", "weird science", "quantum", "quantum physics", "relativity", "Einstein",
+"black holes", "wormholes", "multiverse", "consciousness", "mind", "psychology", "neuroscience", "brain", "memory", "dreams", "lucid dreaming", "neuroplasticity", "intelligence",
+"psychic", "telepathy", "conspiracy", "government secrets", "deep state", "plum island", "Lyme disease", "bioweapon theory", "biotech", "genetics", "CRISPR", "cloning", "biohacking",
+"AI", "artificial intelligence", "machine learning", "robotics", "Neuralink", "digital twin", "simulation", "matrix", "virtual reality", "Augmented Reality", "metaverse", "technology",
+"internet", "cybersecurity", "privacy", "surveillance", "NSA", "privacy rights", "cryptocurrency", "bitcoin", "blockchain", "crypto", "economics", "finance", "longevity", "biohacks",
+"health", "wellness", "fitness", "nutrition", "ketogenic", "intermittent fasting", "supplements", "cognitive enhancement", "nootropics", "cold therapy", "blood flow restriction",
+"martial arts", "MMA", "UFC", "training", "discipline", "motivation", "David Goggins", "Jocko Willink", "military", "Navy SEAL", "survival", "adventure", "exploration", "mountaineering",
+"deep-sea", "travel", "Mars", "SpaceX", "NASA", "rocket", "colonization", "first contact", "ancient civilizations", "archaeology", "Atlantis", "Gobekli Tepe", "ancient tech",
+"history", "culture", "politics", "elections", "Democracy", "free speech", "content moderation", "media", "journalism", "social media", "Facebook", "Twitter", "Mark Zuckerberg",
+"Elon Musk", "Jordan Peterson", "Sam Harris", "Alex Jones", "Joe Rogan", "Donald Trump", "Bernie Sanders", "Kamala Harris", "policy", "healthcare", "immigration", "ICE raids",
+"environment", "climate change", "wildfires", "surveillance", "government", "whistleblower", "Edward Snowden", "privacy", "mass surveillance", "free thought", "controversy",
+"cancel culture", "censorship", "philosophy", "existentialism", "meaning of life", "spirituality", "meditation", "psychedelics", "ayahuasca", "psilocybin", "DMT", "mental health",
+"depression", "anxiety", "PTSD", "self-help", "personal growth", "mindfulness", "resilience", "inspiration", "motivational", "biohacker", "human potential", "peak performance",
+"sleep hacks", "productivity", "habits", "discipline", "storytelling", "interview", "guest", "long-form", "raw", "unfiltered", "authentic", "open conversation", "deep dive",
+"controversial", "provocative", "in-depth", "analysis", "debate", "perspective", "educational", "entertaining", "insight", "callout", "rants", "opinions", "humble", "curious",
+"skeptic", "critical thinking", "myth busting", "debunk", "evidence-based", "research", "science vs myth", "fact-check", "data", "statistics", "stories", "life lessons",
+"relationships", "travel stories", "food", "cooking", "Guy Fieri", "outdoors", "hunting", "bow hunting", "mountain biking", "adrenaline", "extreme", "bio", "profile", "bio profile",
+"gigantic", "epic", "legendary", "incredible", "shock", "wow", "mind blown", "must hear", "viral", "clip", "highlight", "snippet", "full episode", "podcast", "podcast clip",
+"Spotify", "YouTube", "platform", "exclusive", "live stream", "audio", "visual", "HD", "HD audio", "guest list", "guest drop", "studio", "equipment", "mic", "headphones",
+"recording", "production", "editing", "transcript", "shorts", "TikTok", "Reels", "viral clip", "share", "join", 'myth'
+}
 
+TIME_WORD = {
+   "1", "one", "2", "two", "3", "three", "4", "four", "5", "five",
+"6", "six", "7", "seven", "8", "eight", "9", "nine", "10", "ten",
+"11", "eleven", "12", "twelve", "13", "thirteen", "14", "fourteen", "15", "fifteen",
+"16", "sixteen", "17", "seventeen", "18", "eighteen", "19", "nineteen", "20", "twenty",
+"21", "twenty-one", "22", "twenty-two", "23", "twenty-three", "24", "twenty-four", "25", "twenty-five",
+"26", "twenty-six", "27", "twenty-seven", "28", "twenty-eight", "29", "twenty-nine", "30", "thirty",
+"31", "thirty-one", "32", "thirty-two", "33", "thirty-three", "34", "thirty-four", "35", "thirty-five",
+"36", "thirty-six", "37", "thirty-seven", "38", "thirty-eight", "39", "thirty-nine", "40", "forty",
+"41", "forty-one", "42", "forty-two", "43", "forty-three", "44", "forty-four", "45", "forty-five",
+"46", "forty-six", "47", "forty-seven", "48", "forty-eight", "49", "forty-nine", "50", "fifty",
+"51", "fifty-one", "52", "fifty-two", "53", "fifty-three", "54", "fifty-four", "55", "fifty-five",
+"56", "fifty-six", "57", "fifty-seven", "58", "fifty-eight", "59", "fifty-nine", "60", "sixty",
+"61", "sixty-one", "62", "sixty-two", "63", "sixty-three", "64", "sixty-four", "65", "sixty-five",
+"66", "sixty-six", "67", "sixty-seven", "68", "sixty-eight", "69", "sixty-nine", "70", "seventy",
+"71", "seventy-one", "72", "seventy-two", "73", "seventy-three", "74", "seventy-four", "75", "seventy-five",
+"76", "seventy-six", "77", "seventy-seven", "78", "seventy-eight", "79", "seventy-nine", "80", "eighty",
+"81", "eighty-one", "82", "eighty-two", "83", "eighty-three", "84", "eighty-four", "85", "eighty-five",
+"86", "eighty-six", "87", "eighty-seven", "88", "eighty-eight", "89", "eighty-nine", "90", "ninety",
+"91", "ninety-one", "92", "ninety-two", "93", "ninety-three", "94", "ninety-four", "95", "ninety-five",
+"96", "ninety-six", "97", "ninety-seven", "98", "ninety-eight", "99", "ninety-nine", "100", "one hundred"
+}
+
+BADWARDO = {
+    "sponsor", "subscribe", "advertisement"
+}
+
+# --- Utility Functions ---
 def load_models():
+    """Load all NLP and ML models."""
     nlp = spacy.load("en_core_web_trf")
     device = "cuda" if torch.cuda.is_available() else "cpu"
     embed_model = SentenceTransformer("all-mpnet-base-v2").to(device)
@@ -34,6 +127,7 @@ def load_models():
     return nlp, embed_model, kw_model, device, emotion_classifier
 
 def load_subtitles(file_path: str, nlp) -> Tuple[List[Dict], List[int]]:
+    """Load subtitles and map sentences to timestamps."""
     subs = pysrt.open(file_path, encoding='utf-8')
     full_text = ""
     index_map = []
@@ -119,25 +213,33 @@ def detect_boundaries(
                 boundaries.append(next_sub_idx)
     return [0] + sorted(set(boundaries)) + [len(sentences)]
 
-def extract_topics(segment_text: str, kw_model, score_threshold: float = 0.45) -> Tuple[str, float]:
+def extract_topics(segment_text: str, kw_model, score_threshold: float = 0.45) -> Tuple[str, float, List[str]]:
     keywords = kw_model.extract_keywords(
         segment_text,
         keyphrase_ngram_range=(1, 3),
         stop_words='english',
         top_n=100
     )
-    if keywords:
-        filtered = [(kw, score) for kw, score in keywords if score >= score_threshold]
-        if filtered:
-            topics = ", ".join([kw for kw, _ in filtered])
-            return topics, filtered[0][1]
-    return "N/A", 0.0
+    all_keywords = [kw for kw, _ in keywords]
+    filtered = [(kw, score) for kw, score in keywords if score >= score_threshold]
+    if filtered:
+        topics = ", ".join([kw for kw, _ in filtered])
+        return topics, filtered[0][1], all_keywords
+    return "N/A", 0.0, all_keywords
+
+def find_qna_words(text: str) -> List[str]:
+    words = set(text.lower().split())
+    return [word for word in QNA_WORDS if word in words]
 
 def score_edu_story_boost(text: str) -> float:
     text = text.lower()
     edu_score = sum(1 for word in EDUCATIONAL_KEYWORDS if word in text)
     story_score = sum(1 for word in STORY_KEYWORDS if word in text)
-    return edu_score * 0.5 + story_score * 0.5
+    keyword_score = sum(1 for word in KEYWORDS if word in text)
+    qna_score = sum(1 for word in QNA_WORDS if word in text)
+    time_score = sum(1 for word in TIME_WORD if word in text)
+    bad_score = sum(1 for word in BADWARDO if word in text)
+    return edu_score * 0.5 + story_score * 0.5 + keyword_score * 1 + qna_score * 0.6 + time_score * 0.5 - bad_score * 50
 
 def named_entity_score(nlp, text: str) -> int:
     doc = nlp(text)
@@ -145,7 +247,6 @@ def named_entity_score(nlp, text: str) -> int:
     return sum(1 for ent in doc.ents if ent.label_ in informative_types)
 
 def emotion_score(emotion_classifier, topics: str, segment_preview: str) -> Tuple[str, float]:
-    # Use topics if available, else use preview (max 512 chars)
     input_text = topics if topics and topics != "N/A" else segment_preview[:512]
     emotions = emotion_classifier(input_text)
     top_emotion = max(emotions[0], key=lambda x: x['score'])
@@ -167,6 +268,27 @@ def segment_score(text: str, topic_score: float, nlp, emotion_classifier, topics
         0.5 * emotion_intensity
     ), emotion, emotion_intensity
 
+def break_segment(segment_info, max_duration=180):
+    """Breaks a segment into smaller segments if it exceeds max_duration."""
+    segments = []
+    start_idx = 0
+    while start_idx < len(segment_info):
+        start_time = segment_info[start_idx]["start"]
+        total_duration = 0
+        end_idx = start_idx
+        while end_idx < len(segment_info):
+            end_time = segment_info[end_idx]["end"]
+            duration = (time_to_datetime(end_time) - time_to_datetime(start_time)).total_seconds()
+            if duration > max_duration:
+                break
+            total_duration = duration
+            end_idx += 1
+        if end_idx == start_idx:
+            end_idx += 1  # Ensure at least one sentence per segment
+        segments.append((start_idx, end_idx, total_duration))
+        start_idx = end_idx
+    return segments
+
 def generate_segments(
     boundaries: List[int],
     sentence_entries: List[Dict],
@@ -175,39 +297,48 @@ def generate_segments(
     emotion_classifier,
     min_sentences: int,
     min_duration: int,
-    topic_score_threshold: float = 0.45
+    max_duration: int = 180,
+    topic_score_threshold: float = 0.45,
+    score_threshold: float = 10
 ) -> List[Dict]:
+    """Generate and score segments, breaking up long ones and filtering by score."""
     segments = []
     for idx in range(len(boundaries) - 1):
-        start_idx, end_idx = boundaries[idx], boundaries[idx + 1]
-        if end_idx - start_idx < min_sentences:
-            continue
-        segment_info = sentence_entries[start_idx:end_idx]
-        start_time = segment_info[0]["start"]
-        end_time = segment_info[-1]["end"]
-        duration = (time_to_datetime(end_time) - time_to_datetime(start_time)).total_seconds()
-        if duration < min_duration:
-            continue
-        segment_text = " ".join(entry["text"] for entry in segment_info)
-        topics, top_score = extract_topics(segment_text, kw_model, topic_score_threshold)
-        if topics == "N/A":
-            continue
-        score, emotion, emotion_intensity = segment_score(segment_text, top_score, nlp, emotion_classifier, topics, segment_text)
-        segments.append({
-            "Segment": len(segments) + 1,
-            "Start": start_time,
-            "End": end_time,
-            "Preview": segment_text[:400] + ("..." if len(segment_text) > 400 else ""),
-            "Topics": topics,
-            "TopTopicScore": top_score,
-            "Score": score,
-            "Emotion": emotion,
-            "EmotionIntensity": emotion_intensity
-        })
+        seg_start, seg_end = boundaries[idx], boundaries[idx + 1]
+        segment_info = sentence_entries[seg_start:seg_end]
+        sub_segments = break_segment(segment_info, max_duration)
+        for sub_start, sub_end, duration in sub_segments:
+            if sub_end - sub_start < min_sentences or duration < min_duration:
+                continue
+            sub_segment_info = segment_info[sub_start:sub_end]
+            start_time = sub_segment_info[0]["start"]
+            end_time = sub_segment_info[-1]["end"]
+            segment_text = " ".join(entry["text"] for entry in sub_segment_info)
+            topics, top_score, all_keywords = extract_topics(segment_text, kw_model, topic_score_threshold)
+            qna_words = find_qna_words(segment_text)
+            if topics == "N/A":
+                continue
+            score, emotion, emotion_intensity = segment_score(segment_text, top_score, nlp, emotion_classifier, topics, segment_text)
+            if score < score_threshold:
+                continue  # Skip segments with low score
+            segments.append({
+                "TopTopicScore": top_score,
+                "Score": score,
+                "Emotion": emotion,
+                "EmotionIntensity": emotion_intensity,
+                "Segment": len(segments) + 1,
+                "Start": start_time,
+                "End": end_time,
+                "Duration": duration,
+                "Preview": segment_text[:400] + ("..." if len(segment_text) > 400 else ""),
+                "AllKeywords": ", ".join(all_keywords),
+                "QnAWords": ", ".join(qna_words),
+            })
     top_segments = sorted(segments, key=lambda x: x["Score"], reverse=True)
     return top_segments
 
 def save_segments_to_csv(segments: List[Dict], output_path: str):
+    """Save segments to CSV."""
     df = pd.DataFrame(segments)
     df.to_csv(output_path, index=False)
     print(f"\n✅ Top segments saved to {output_path}.\n")
@@ -218,8 +349,11 @@ def segment_srt_pipeline(
     time_gap_threshold: float = 4,
     min_sentences: int = 3,
     min_duration: int = 20,
-    topic_score_threshold: float = 0.45
+    max_duration: int = 180,
+    topic_score_threshold: float = 0.45,
+    score_threshold: float = 10
 ):
+    """Main pipeline to process SRT and output scored segments."""
     nlp, embed_model, kw_model, device, emotion_classifier = load_models()
     sentence_entries, subtitle_start_indices = load_subtitles(file_path, nlp)
     sentences = [entry["text"] for entry in sentence_entries]
@@ -243,7 +377,9 @@ def segment_srt_pipeline(
         emotion_classifier,
         min_sentences,
         min_duration,
-        topic_score_threshold
+        max_duration,
+        topic_score_threshold,
+        score_threshold
     )
     output_path = "segments.csv"
     save_segments_to_csv(segments, output_path)
