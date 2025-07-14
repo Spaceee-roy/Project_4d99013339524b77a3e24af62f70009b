@@ -140,7 +140,6 @@ BADWARDO = {
 
 
 def load_models(): # Loads models
-    """Load all NLP and ML models.""" 
     nlp = spacy.load("en_core_web_trf")
     device = "cuda" if torch.cuda.is_available() else "cpu"
     embed_model = SentenceTransformer("all-mpnet-base-v2").to(device)
@@ -149,7 +148,6 @@ def load_models(): # Loads models
     return nlp, embed_model, kw_model, device, emotion_classifier
 
 def load_subtitles(file_path: str, nlp) -> Tuple[List[Dict], List[int]]: 
-    """Load subtitles and map sentences to timestamps."""
     subs = pysrt.open(file_path, encoding='utf-8')
     full_text = ""
     index_map = []
