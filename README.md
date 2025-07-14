@@ -69,9 +69,6 @@ pip install scipy
 pip install spacy
 ```
 ``` bash
-pip install moviepy
-```
-``` bash
 pip install datetime
 ```
 ``` bash
