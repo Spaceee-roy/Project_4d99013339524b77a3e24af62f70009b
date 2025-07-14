@@ -3,7 +3,6 @@ import cv2
 import pandas as pd
 import numpy as np
 from scipy.interpolate import interp1d
-from moviepy import VideoFileClip, AudioFileClip
 import assemblyai as aai
 import os
 import subprocess
@@ -17,7 +16,7 @@ def print_progress_bar(iteration, total, prefix='', suffix='', length=10):
     percent = f"{100 * (iteration / float(total)):.1f}"
     filled_length = int(length * iteration // total)
     bar = '█' * filled_length + '•' * (length - filled_length)
-    print(f'\r{prefix} |{bar}| {percent}% {suffix}', end='')
+    # print(f'\r{prefix} |{bar}| {percent}% {suffix}', end='')
     if iteration == total:
         print()
 
@@ -27,6 +26,7 @@ def cut_video(input_path, output_path, start_time, end_time):
         # Trim video with accurate timestamps (frame-accurate)
         trim_command = [
             "ffmpeg", "-y",
+            "loglevel", "error",
             "-i", input_path,
             "-ss", str(start_time),
             "-to", str(end_time),
@@ -36,19 +36,20 @@ def cut_video(input_path, output_path, start_time, end_time):
             output_path
         ]
         subprocess.run(trim_command, check=True)
-        print(f"[cut_video] ✅ Video trimmed: {output_path}")
+        # print(f"[cut_video] ✅ Video trimmed: {output_path}")
 
         # Extract audio separately to MP3
         audio_path = output_path.replace('.mp4', '.mp3')
         audio_command = [
             "ffmpeg", "-y",
+            "loglevel", "error",
             "-i", output_path,
             "-q:a", "0",
             "-map", "a",
             audio_path
         ]
         subprocess.run(audio_command, check=True)
-        print(f"[cut_video] 🎧 Audio extracted: {audio_path}")
+        # print(f"[cut_video] 🎧 Audio extracted: {audio_path}")
 
     except subprocess.CalledProcessError as e:
         print(f"[cut_video] ❌ ffmpeg error: {e}")
@@ -69,7 +70,7 @@ def process_video(video_path, output_path):
     face_x_positions, timestamps = [], []
     last_x = None
     frame_count = 0
-    print("Phase 1: Detecting faces...")
+    # print("Phase 1: Detecting faces...")
 
     while True:
         ret, frame = video_capture.read()
@@ -96,7 +97,7 @@ def process_video(video_path, output_path):
     df = pd.DataFrame({'Timestamp': timestamps, 'Face_X_Position': face_x_positions}).bfill()
     df.to_csv('face_positions.csv', index=False)
 
-    print("Phase 2: Reformatting video...")
+    # print("Phase 2: Reformatting video...")
     video_capture = cv2.VideoCapture(video_path)
     interpolator = interp1d(df['Timestamp'], df['Face_X_Position'], kind='cubic', fill_value='extrapolate')
 
@@ -143,7 +144,7 @@ def process_video(video_path, output_path):
         out.release()
     video_capture.release()
     cv2.destroyAllWindows()
-    print("✅ Video reformatted and saved!")
+    # print("✅ Video reformatted and saved!")
 
 
 
@@ -151,6 +152,7 @@ def combine_video_audio(video_path, audio_path, output_path):
     try:
         command = [
         'ffmpeg',
+        "loglevel", "error",
         '-i', video_path,
         '-i', audio_path,
         '-c:v', 'copy',
@@ -166,14 +168,14 @@ def combine_video_audio(video_path, audio_path, output_path):
         print(f"Error combining video and audio: {e}")
 
 def generate_subtitles(video_path, subtitle_path):
-    print("🎧 Transcribing audio...")
+    # print("🎧 Transcribing audio...")
     transcriber = aai.Transcriber(config=aai.TranscriptionConfig(speech_model=aai.SpeechModel.nano))
     transcript = transcriber.transcribe(video_path)
     subtitles = transcript.export_subtitles_srt()
 
     with open(subtitle_path, 'w') as f:
         f.write(subtitles)
-    print("✅ Subtitle file created successfully!")
+    # print("✅ Subtitle file created successfully!")
 
 def add_subtitles(video_path, subtitle_path, output_path):
     try:
@@ -185,14 +187,15 @@ def add_subtitles(video_path, subtitle_path, output_path):
 
         command = [
             'ffmpeg',
+            "loglevel", "error",
             '-i', video_file,
             '-vf', f"subtitles={subtitle_file}:force_style='FontName=Roboto,Alignment=2,MarginV=75,FontSize=14,Bold=1,PrimaryColour=&HFFFF&'",
             '-c:a', 'copy',
             output_file
         ]
-        print(f"Running command: {' '.join(command)}")
+        # print(f"Running command: {' '.join(command)}")
         subprocess.run(command, check=True)
-        print(f"✅ Video with subtitles saved to: {output_file}")
+        # print(f"✅ Video with subtitles saved to: {output_file}")
     except subprocess.CalledProcessError as e:
         print(f"Error adding subtitles: {str(e)}")
     except Exception as e:
@@ -200,6 +203,7 @@ def add_subtitles(video_path, subtitle_path, output_path):
 
 def process_all_segments():
     filepath = input("SRT file name: ")
+    input_video = f'C:\\Users\\pcofp\\Desktop\\Python\\{input("Enter the video file name: ")}'
     executioner.segment_srt_pipeline(filepath)
     df = pd.read_csv('segments.csv')
 
@@ -208,7 +212,7 @@ def process_all_segments():
     df['Start_seconds'] = pd.to_timedelta(df['Start']).dt.total_seconds().astype(int)
     df['End_seconds'] = pd.to_timedelta(df['End']).dt.total_seconds().astype(int)
 
-    input_video = f'C:\\Users\\pcofp\\Desktop\\Python\\{input("Enter the video file name: ")}'
+    
 
     for idx, row in df.iterrows():
         start = row['Start_seconds']
