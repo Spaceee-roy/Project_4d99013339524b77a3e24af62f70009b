@@ -11,7 +11,9 @@ from typing import List, Dict, Tuple
 from textblob import TextBlob
 from transformers import pipeline
 
-# --- Constants ---
+# --- Constants --- 
+# These are weights which are tied in a function with this equation:  
+# EDUCATIONAL_KEYWORDS * 0.5 + QNA_WORDS * 0.6 + STORY_KEYWORDS * 0.5 + KEYWORDS * 1 + TIME_WORD * 0.5 - BADWARDO * 50
 DISCOURSE_MARKERS = {
     "however", "anyway", "so", "but", "nevertheless", "still", "though",
     "instead", "on the other hand"
