@@ -5,11 +5,6 @@ This repository contains the code for the YouTube Short Automation Created by Sp
 
 ## CMAKE and VISUAL STUDIO CODE C++ MUST BE INSTALLED 
 
-## PYTHON VERSION SHOULD BE 3.10 OR LOWER. CANNOT RUN
-``` bash
-pip install requirements.txt
-```
-
 ## Needed Files
 
 To run this project, you will need to have the following files downloaded on your device:
