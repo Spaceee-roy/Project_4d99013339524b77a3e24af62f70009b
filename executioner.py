@@ -8,22 +8,32 @@ import torch
 import pandas as pd
 from datetime import datetime
 from typing import List, Dict, Tuple
+from textblob import TextBlob
+from transformers import pipeline
 
 DISCOURSE_MARKERS = {
     "however", "anyway", "so", "but", "nevertheless", "still", "though",
     "instead", "on the other hand"
 }
 
-def load_models() -> Tuple[spacy.language.Language, SentenceTransformer, KeyBERT, str]:
-    """Load NLP, embedding, and keyword extraction models."""
+EDUCATIONAL_KEYWORDS = {
+    "explain", "reason", "because", "process", "method", "fact", "data", "research", "study"
+}
+
+STORY_KEYWORDS = {
+    "once", "happened", "remember", "told", "story", "experience", "felt", "saw", "heard",
+    "when i", "then", "after that"
+}
+
+def load_models():
     nlp = spacy.load("en_core_web_trf")
     device = "cuda" if torch.cuda.is_available() else "cpu"
     embed_model = SentenceTransformer("all-mpnet-base-v2").to(device)
     kw_model = KeyBERT(model=embed_model)
-    return nlp, embed_model, kw_model, device
+    emotion_classifier = pipeline("text-classification", model="j-hartmann/emotion-english-distilroberta-base", top_k=None)
+    return nlp, embed_model, kw_model, device, emotion_classifier
 
 def load_subtitles(file_path: str, nlp) -> Tuple[List[Dict], List[int]]:
-    """Load subtitles and merge into full grammatical sentences using spaCy."""
     subs = pysrt.open(file_path, encoding='utf-8')
     full_text = ""
     index_map = []
@@ -71,11 +81,9 @@ def load_subtitles(file_path: str, nlp) -> Tuple[List[Dict], List[int]]:
     return sentence_entries, subtitle_start_indices
 
 def time_to_datetime(t: datetime.time) -> datetime:
-    """Convert a datetime.time object to datetime.datetime on a fixed date."""
     return datetime.combine(datetime.min, t)
 
 def compute_similarity(sentences: List[str], embed_model, device, window_size: int = 2) -> np.ndarray:
-    """Compute semantic similarity between consecutive sentence windows."""
     window_texts = [
         " ".join(sentences[i:i + window_size])
         for i in range(len(sentences) - window_size)
@@ -92,7 +100,6 @@ def detect_boundaries(
     dynamic_std_factor: float,
     time_gap_threshold: float
 ) -> List[int]:
-    """Detect segment boundaries based on similarity drops, time gaps, and discourse markers."""
     boundaries = []
     sim_mean, sim_std = np.mean(similarities), np.std(similarities)
     dynamic_threshold = sim_mean - dynamic_std_factor * sim_std
@@ -102,8 +109,8 @@ def detect_boundaries(
         end_dt = time_to_datetime(sentence_entries[i]["end"])
         time_gap = (start_dt - end_dt).total_seconds()
         text = sentence_entries[i + 1]["text"].lower()
-        has_discourse_marker = any(marker in text for marker in DISCOURSE_MARKERS)
-        if sim_drop > dynamic_threshold or time_gap > time_gap_threshold or has_discourse_marker:
+        has_discourse_marker = any(marker in text.split()[:3] for marker in DISCOURSE_MARKERS)
+        if (sim_drop > dynamic_threshold or time_gap > time_gap_threshold) and not has_discourse_marker:
             next_sub_idx = min(
                 (idx for idx in subtitle_start_indices if idx > i),
                 default=len(sentences)
@@ -113,29 +120,63 @@ def detect_boundaries(
     return [0] + sorted(set(boundaries)) + [len(sentences)]
 
 def extract_topics(segment_text: str, kw_model, score_threshold: float = 0.45) -> Tuple[str, float]:
-    """Extract keywords/topics from a segment of text using KeyBERT, return best topic and score."""
     keywords = kw_model.extract_keywords(
         segment_text,
         keyphrase_ngram_range=(1, 3),
         stop_words='english',
-        top_n=5
+        top_n=100
     )
-    if keywords and keywords[0][1] >= score_threshold:
-        topics = ", ".join([kw for kw, score in keywords if score >= score_threshold])
-        top_score = keywords[0][1]
-        return topics, top_score
+    if keywords:
+        filtered = [(kw, score) for kw, score in keywords if score >= score_threshold]
+        if filtered:
+            topics = ", ".join([kw for kw, _ in filtered])
+            return topics, filtered[0][1]
     return "N/A", 0.0
+
+def score_edu_story_boost(text: str) -> float:
+    text = text.lower()
+    edu_score = sum(1 for word in EDUCATIONAL_KEYWORDS if word in text)
+    story_score = sum(1 for word in STORY_KEYWORDS if word in text)
+    return edu_score * 0.5 + story_score * 0.5
+
+def named_entity_score(nlp, text: str) -> int:
+    doc = nlp(text)
+    informative_types = {"PERSON", "ORG", "GPE", "DATE", "TIME", "NORP"}
+    return sum(1 for ent in doc.ents if ent.label_ in informative_types)
+
+def emotion_score(emotion_classifier, topics: str, segment_preview: str) -> Tuple[str, float]:
+    # Use topics if available, else use preview (max 512 chars)
+    input_text = topics if topics and topics != "N/A" else segment_preview[:512]
+    emotions = emotion_classifier(input_text)
+    top_emotion = max(emotions[0], key=lambda x: x['score'])
+    return top_emotion['label'], top_emotion['score']
+
+def segment_score(text: str, topic_score: float, nlp, emotion_classifier, topics: str, segment_text: str) -> Tuple[float, str, float]:
+    blob = TextBlob(text)
+    sentiment_score = blob.sentiment.polarity
+    subjectivity_score = blob.sentiment.subjectivity
+    edu_story_boost = score_edu_story_boost(text)
+    entity_score = named_entity_score(nlp, text)
+    emotion, emotion_intensity = emotion_score(emotion_classifier, topics, segment_text)
+    return (
+        0.5 * topic_score +
+        0.3 * sentiment_score +
+        0.3 * subjectivity_score +
+        1.0 * edu_story_boost +
+        0.5 * entity_score +
+        0.5 * emotion_intensity
+    ), emotion, emotion_intensity
 
 def generate_segments(
     boundaries: List[int],
     sentence_entries: List[Dict],
     kw_model,
     nlp,
+    emotion_classifier,
     min_sentences: int,
     min_duration: int,
     topic_score_threshold: float = 0.45
 ) -> List[Dict]:
-    """Generate final segments from detected boundaries with metadata and topics."""
     segments = []
     for idx in range(len(boundaries) - 1):
         start_idx, end_idx = boundaries[idx], boundaries[idx + 1]
@@ -151,21 +192,25 @@ def generate_segments(
         topics, top_score = extract_topics(segment_text, kw_model, topic_score_threshold)
         if topics == "N/A":
             continue
+        score, emotion, emotion_intensity = segment_score(segment_text, top_score, nlp, emotion_classifier, topics, segment_text)
         segments.append({
             "Segment": len(segments) + 1,
             "Start": start_time,
             "End": end_time,
-            "Preview": segment_text[:200] + ("..." if len(segment_text) > 200 else ""),
+            "Preview": segment_text[:400] + ("..." if len(segment_text) > 400 else ""),
             "Topics": topics,
-            "TopTopicScore": top_score
+            "TopTopicScore": top_score,
+            "Score": score,
+            "Emotion": emotion,
+            "EmotionIntensity": emotion_intensity
         })
-    return segments
+    top_segments = sorted(segments, key=lambda x: x["Score"], reverse=True)
+    return top_segments
 
 def save_segments_to_csv(segments: List[Dict], output_path: str):
-    """Save the generated segments to a CSV file."""
     df = pd.DataFrame(segments)
     df.to_csv(output_path, index=False)
-    print(f"\n✅ Segments saved to {output_path}.\n")
+    print(f"\n✅ Top segments saved to {output_path}.\n")
 
 def segment_srt_pipeline(
     file_path: str,
@@ -175,8 +220,7 @@ def segment_srt_pipeline(
     min_duration: int = 20,
     topic_score_threshold: float = 0.45
 ):
-    """Main pipeline to process an SRT file and generate segmented CSV output."""
-    nlp, embed_model, kw_model, device = load_models()
+    nlp, embed_model, kw_model, device, emotion_classifier = load_models()
     sentence_entries, subtitle_start_indices = load_subtitles(file_path, nlp)
     sentences = [entry["text"] for entry in sentence_entries]
     if not sentences:
@@ -196,6 +240,7 @@ def segment_srt_pipeline(
         sentence_entries,
         kw_model,
         nlp,
+        emotion_classifier,
         min_sentences,
         min_duration,
         topic_score_threshold
@@ -204,5 +249,4 @@ def segment_srt_pipeline(
     save_segments_to_csv(segments, output_path)
 
 if __name__ == "__main__":
-    file_path = input("Enter SRT file path: ").strip()
-    segment_srt_pipeline(file_path)
+    segment_srt_pipeline('n.srt')
