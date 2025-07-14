@@ -14,23 +14,35 @@ from transformers import pipeline
 # --- Constants --- 
 # These are weights which are tied in a function with this equation:  
 # EDUCATIONAL_KEYWORDS * 0.5 + QNA_WORDS * 0.6 + STORY_KEYWORDS * 0.5 + KEYWORDS * 1 + TIME_WORD * 0.5 - BADWARDO * 50
+
+# Says to the code that you are in the middle of a topic continue further.
+
 DISCOURSE_MARKERS = {
     "however", "anyway", "so", "but", "nevertheless", "still", "though",
     "instead", "on the other hand"
 }
 
+# The code looks for educational videos
+
 EDUCATIONAL_KEYWORDS = {
     "explain", "reason", "because", "process", "method", "fact", "data", "research", "study", "question"
 }
+
+# The code is wired to capture questions and answers
 
 QNA_WORDS = {
     "what", "why", "how", "when", "where", "who", "which", "whom", "whose", "is", "are", "do", "does", "did", "can", "could", "should", "would"
 }
 
+# Everyone likes a good story
+
 STORY_KEYWORDS = {
     "once", "happened", "remember", "told", "story", "experience", "felt", "saw", "heard",
     "when i", "then", "after that"
 }
+
+# Feel free to add more 😊
+
 KEYWORDS = {
     "fission", "fusion", "space", "time", "universe", "I know", "i know", "mars", "aliens", "humans", "mind", "sky", "stars", "star",
 "black hole", "quantum", "energy", "light", "darkness", "galaxy", "planets", "moon", "sun", "gravity", "science", "wormhole", "nebula", "cosmos", "dimensions",
@@ -91,6 +103,10 @@ KEYWORDS = {
 "recording", "production", "editing", "transcript", "shorts", "TikTok", "Reels", "viral clip", "share", "join", 'myth'
 }
 
+# The time_word is there to capture dates, times, data and more. 
+
+# 1972, 73%, four years old, 12:00 pm, 9 big apples.
+
 TIME_WORD = {
    "1", "one", "2", "two", "3", "three", "4", "four", "5", "five",
 "6", "six", "7", "seven", "8", "eight", "9", "nine", "10", "ten",
@@ -114,13 +130,17 @@ TIME_WORD = {
 "96", "ninety-six", "97", "ninety-seven", "98", "ninety-eight", "99", "ninety-nine", "100", "one hundred"
 }
 
+# Gets rid of ad reads and other annoyances.
+
 BADWARDO = {
     "sponsor", "subscribe", "advertisement"
 }
 
 # --- Utility Functions ---
-def load_models():
-    """Load all NLP and ML models."""
+
+
+def load_models(): # Loads models
+    """Load all NLP and ML models.""" 
     nlp = spacy.load("en_core_web_trf")
     device = "cuda" if torch.cuda.is_available() else "cpu"
     embed_model = SentenceTransformer("all-mpnet-base-v2").to(device)
@@ -128,7 +148,7 @@ def load_models():
     emotion_classifier = pipeline("text-classification", model="j-hartmann/emotion-english-distilroberta-base", top_k=None)
     return nlp, embed_model, kw_model, device, emotion_classifier
 
-def load_subtitles(file_path: str, nlp) -> Tuple[List[Dict], List[int]]:
+def load_subtitles(file_path: str, nlp) -> Tuple[List[Dict], List[int]]: 
     """Load subtitles and map sentences to timestamps."""
     subs = pysrt.open(file_path, encoding='utf-8')
     full_text = ""
