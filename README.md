@@ -3,7 +3,7 @@ This repository contains the code for the YouTube Short Automation Created by Sp
 
 # Important Note
 
-## CMAKE and VISUAL STUDIO CODE C++ MUST BE INSTALLED 
+## CMAKE, FFMPEG and VISUAL STUDIO CODE C++ MUST BE INSTALLED 
 
 ## Needed Files
 
