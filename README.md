@@ -56,6 +56,12 @@ If there are multiple topics inside of the video, it will repeat these steps and
 
 ## Libraries Used
 
+Run this command: 
+
+```bash
+pip install requirments.txt
+```
+
 ``` bash
 pip install opencv-python
 ```
