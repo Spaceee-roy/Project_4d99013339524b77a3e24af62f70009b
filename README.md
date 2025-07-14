@@ -5,6 +5,8 @@ This repository contains the code for the YouTube Short Automation Created by Sp
 
 ## CMAKE, FFMPEG and VISUAL STUDIO CODE C++ MUST BE INSTALLED 
 
+Life will be much easier if you have administrator powers. Trust me, I found out the hard way.
+
 ## Needed Files
 
 To run this project, you will need to have the following files downloaded on your device:
