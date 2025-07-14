@@ -341,7 +341,7 @@ def save_segments_to_csv(segments: List[Dict], output_path: str):
     """Save segments to CSV."""
     df = pd.DataFrame(segments)
     df.to_csv(output_path, index=False)
-    print(f"\n✅ Top segments saved to {output_path}.\n")
+    # print(f"\n✅ Top segments saved to {output_path}.\n")
 
 def segment_srt_pipeline(
     file_path: str,
