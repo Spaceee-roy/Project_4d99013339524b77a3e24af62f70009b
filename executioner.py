@@ -147,7 +147,8 @@ def load_models(): # Loads models
     emotion_classifier = pipeline("text-classification", model="j-hartmann/emotion-english-distilroberta-base", top_k=None)
     return nlp, embed_model, kw_model, device, emotion_classifier
 
-def load_subtitles(file_path: str, nlp) -> Tuple[List[Dict], List[int]]: 
+def load_subtitles(file_path: str, nlp) -> Tuple[List[Dict], List[int]]:  # Reads the subtitle and turns it into readable language for the models.
+    subs = pysrt.open(file_path, encoding='utf-8')
     subs = pysrt.open(file_path, encoding='utf-8')
     full_text = ""
     index_map = []
@@ -206,7 +207,7 @@ def compute_similarity(sentences: List[str], embed_model, device, window_size: i
     similarities = cosine_similarity(embeddings[:-1], embeddings[1:])
     return np.diag(similarities)
 
-def detect_boundaries(
+def detect_boundaries( # Detects topics and there boudaries.
     sentences: List[str],
     sentence_entries: List[Dict],
     subtitle_start_indices: List[int],
@@ -233,7 +234,7 @@ def detect_boundaries(
                 boundaries.append(next_sub_idx)
     return [0] + sorted(set(boundaries)) + [len(sentences)]
 
-def extract_topics(segment_text: str, kw_model, score_threshold: float = 0.45) -> Tuple[str, float, List[str]]:
+def extract_topics(segment_text: str, kw_model, score_threshold: float = 0.45) -> Tuple[str, float, List[str]]: # Extracts topics
     keywords = kw_model.extract_keywords(
         segment_text,
         keyphrase_ngram_range=(1, 3),
@@ -247,11 +248,14 @@ def extract_topics(segment_text: str, kw_model, score_threshold: float = 0.45) -
         return topics, filtered[0][1], all_keywords
     return "N/A", 0.0, all_keywords
 
-def find_qna_words(text: str) -> List[str]:
+def find_qna_words(text: str) -> List[str]: #finds qna words
     words = set(text.lower().split())
     return [word for word in QNA_WORDS if word in words]
+def find_time_words(text: str) -> List[str]: #finds time words
+    words = set(text.lower().split())
+    return [word for word in TIME_WORD if word in words]
 
-def score_edu_story_boost(text: str) -> float:
+def score_edu_story_boost(text: str) -> float: # the equation to find good videos. go to the top to see what it does.
     text = text.lower()
     edu_score = sum(1 for word in EDUCATIONAL_KEYWORDS if word in text)
     story_score = sum(1 for word in STORY_KEYWORDS if word in text)
