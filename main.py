@@ -10,9 +10,9 @@ from executioner import *
 
 
 # AssemblyAI API Key
-aai.settings.api_key = ''
+aai.settings.api_key = '4d99013339524b77a3e24af62f70009b'
 
-def print_progress_bar(iteration, total, prefix='', suffix='', length=10):
+def print_progress_bar(iteration, total, prefix='', suffix='', length=100):
     percent = f"{100 * (iteration / float(total)):.1f}"
     filled_length = int(length * iteration // total)
     bar = '█' * filled_length + '•' * (length - filled_length)
@@ -68,8 +68,6 @@ def cut_video(input_path, output_path, start_time, end_time):
     print(f"[cut_video] ✅ Trimmed video saved: {output_path}")
     return True
 
-
-
 def process_video(video_path, output_path):
     video_capture = cv2.VideoCapture(video_path)
     if not video_capture.isOpened():
@@ -80,47 +78,58 @@ def process_video(video_path, output_path):
     frame_height = int(video_capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
     total_frames = int(video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    face_x_positions, timestamps = [], []
-    last_x = None
-    frame_count = 0
-    print("Phase 1: Detecting faces...")
+    print("Phase 1: Detecting faces (1 per second)...")
 
-    while True:
+    # STEP 1: Face detection every 1 second
+    face_x_positions = []
+    timestamps = []
+    last_x = None
+    scale_factor = 0.15
+    interval = int(fps * 1.0)
+    frame_number = 0
+
+    while frame_number < total_frames:
+        video_capture.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
         ret, frame = video_capture.read()
         if not ret:
             break
 
-        current_time = frame_count / fps
-        if len(timestamps) == 0 or (current_time - timestamps[-1] >= 0.6):
-            face_locations = face_recognition.face_locations(frame)
-            if face_locations:
-                top, right, bottom, left = face_locations[0]
-                center_x = (right + left) // 2
-                last_x = center_x
-            else:
-                center_x = last_x if last_x is not None else None
+        # Resize for faster processing
+        small_frame = cv2.resize(frame, (0, 0), fx=scale_factor, fy=scale_factor)
+        face_locations = face_recognition.face_locations(small_frame, model='hog')
 
-            face_x_positions.append(center_x)
-            timestamps.append(current_time)
+        if face_locations:
+            top, right, bottom, left = face_locations[0]
+            center_x = ((right + left) // 2) / scale_factor  # Scale back to original
+            last_x = center_x
+        else:
+            center_x = last_x if last_x is not None else frame_width // 2
 
-        frame_count += 1
-        print_progress_bar(frame_count, total_frames, prefix='Progress', suffix='Complete', length=100)
+        current_time = frame_number / fps
+        timestamps.append(current_time)
+        face_x_positions.append(center_x)
+
+        frame_number += interval
 
     video_capture.release()
+
+    # Fill gaps and save CSV
     df = pd.DataFrame({'Timestamp': timestamps, 'Face_X_Position': face_x_positions}).bfill()
     df.to_csv('face_positions.csv', index=False)
 
-    print("Phase 2: Reformatting video...")
+    print("Phase 2: Cropping and exporting video...")
+
+    # STEP 2: Crop based on interpolated center positions
     video_capture = cv2.VideoCapture(video_path)
     interpolator = interp1d(df['Timestamp'], df['Face_X_Position'], kind='cubic', fill_value='extrapolate')
 
     new_height = frame_height
-    new_width = int((9/16) * new_height)
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = None
+    new_width = int((9 / 16) * new_height)
+    fourcc = cv2.VideoWriter_fourcc(*'XVID')  # Faster than mp4v
+    out = cv2.VideoWriter(output_path, fourcc, fps, (new_width, new_height))
+
     frame_count = 0
-    last_center = None
-    print_progress_bar(0, total_frames, prefix='Progress', suffix='Complete', length=100)
+    last_center = frame_width // 2
 
     while True:
         ret, frame = video_capture.read()
@@ -130,34 +139,32 @@ def process_video(video_path, output_path):
         current_time = frame_count / fps
         try:
             x_position = interpolator(current_time)
-            crop_center = int(x_position if not np.isnan(x_position) else last_center or frame_width // 2)
+            crop_center = int(x_position if not np.isnan(x_position) else last_center)
             last_center = crop_center
 
-            crop_left = max(0, crop_center - new_width//2)
+            crop_left = max(0, crop_center - new_width // 2)
             crop_right = min(frame_width, crop_left + new_width)
 
             if crop_right - crop_left < new_width:
                 crop_left = max(0, crop_right - new_width)
 
             cropped_frame = frame[:, crop_left:crop_right]
+
             if cropped_frame.shape[1] != new_width:
                 cropped_frame = cv2.resize(cropped_frame, (new_width, new_height))
-
-            if out is None:
-                out = cv2.VideoWriter(output_path, fourcc, fps, (new_width, new_height))
 
             out.write(cropped_frame)
 
         except Exception as e:
-            print(f"Error on frame {frame_count}: {e}")
-        frame_count += 1
-        print_progress_bar(frame_count, total_frames, prefix='Progress', suffix='Complete', length=100)
+            print(f"⚠️ Frame {frame_count} error: {e}")
 
-    if out:
-        out.release()
+        frame_count += 1
+
+    out.release()
     video_capture.release()
     cv2.destroyAllWindows()
-    print("✅ Video reformatted and saved!")
+    print("✅ Done — output saved to:", output_path)
+
 
 
 
@@ -247,7 +254,7 @@ def process_all_segments():
         base_path = os.path.join(temp_dir, f"segment_{idx}")
         trimmed_output = base_path + '.mp4'
         reformatted_output = base_path + '_reformatted.mp4'
-        audio_path = base_path + '.mp3'
+        audio_path = base_path + '.aac'
         combined_output = base_path + '_with_audio.mp4'
         subtitle_path = base_path + '.srt'
         final_output = base_path + '_final.mp4'
