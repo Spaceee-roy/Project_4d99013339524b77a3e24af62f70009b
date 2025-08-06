@@ -6,7 +6,7 @@ from scipy.interpolate import interp1d
 import assemblyai as aai
 import os
 import subprocess
-import executioner
+from executioner import *
 
 
 # AssemblyAI API Key
@@ -16,45 +16,58 @@ def print_progress_bar(iteration, total, prefix='', suffix='', length=10):
     percent = f"{100 * (iteration / float(total)):.1f}"
     filled_length = int(length * iteration // total)
     bar = '█' * filled_length + '•' * (length - filled_length)
-    # print(f'\r{prefix} |{bar}| {percent}% {suffix}', end='')
+    print(f'\r{prefix} |{bar}| {percent}% {suffix}', end='')
     if iteration == total:
         print()
 
-
 def cut_video(input_path, output_path, start_time, end_time):
-    try:
-        # Trim video with accurate timestamps (frame-accurate)
-        trim_command = [
-            "ffmpeg", "-y",
-            "loglevel", "error",
-            "-i", input_path,
-            "-ss", str(start_time),
-            "-to", str(end_time),
-            "-c:v", "libx264",
-            "-c:a", "aac",
-            "-strict", "experimental",
-            output_path
-        ]
-        subprocess.run(trim_command, check=True)
-        # print(f"[cut_video] ✅ Video trimmed: {output_path}")
+    import shutil
 
-        # Extract audio separately to MP3
-        audio_path = output_path.replace('.mp4', '.mp3')
-        audio_command = [
-            "ffmpeg", "-y",
-            "loglevel", "error",
-            "-i", output_path,
-            "-q:a", "0",
-            "-map", "a",
-            audio_path
-        ]
-        subprocess.run(audio_command, check=True)
-        # print(f"[cut_video] 🎧 Audio extracted: {audio_path}")
+    # Ensure absolute paths
+    input_path = os.path.abspath(input_path)
+    output_path = os.path.abspath(output_path)
 
-    except subprocess.CalledProcessError as e:
-        print(f"[cut_video] ❌ ffmpeg error: {e}")
-    except Exception as e:
-        print(f"[cut_video] ❌ Unexpected error: {e}")
+    # Check input file exists
+    if not os.path.isfile(input_path):
+        print(f"[cut_video] ❌ Input file missing: {input_path}")
+        return False
+
+    # Check ffmpeg exists on PATH
+    if not shutil.which("ffmpeg"):
+        print("[cut_video] ❌ ffmpeg not found on PATH")
+        return False
+
+    trim_command = [
+        "ffmpeg", "-y",
+        "-ss", str(start_time),
+        "-i", input_path,
+        "-t", str(end_time - start_time),
+        "-c", "copy",  # REMUX: copy streams, no encoding, encoding it is way more resource intensive and i lost a peaceful day and sleep cause of this; my eyes hurt note to self dont use -c:a libx256 ever again i have written 246 characters
+        output_path,
+    ]
+
+    print(f"[cut_video] Running command: {' '.join(trim_command)}")
+    result = subprocess.run(trim_command, capture_output=True, text=True)
+    audio_path = output_path.replace('.mp4', '.aac')
+    audio_command = [
+            "ffmpeg", "-y",
+            "-loglevel", "error",   
+            "-i", output_path,      
+            "-vn",                 
+            "-acodec", "aac",                         
+            "-map", "a",            
+    audio_path  
+        ]
+    subprocess.run(audio_command, check=True)
+    print(f"[cut_video] 🎧 Audio extracted: {audio_path}")
+
+    if result.returncode != 0:
+        print(f"[cut_video] ffmpeg error:\n{result.stderr.strip()}")
+        return False
+
+    print(f"[cut_video] ✅ Trimmed video saved: {output_path}")
+    return True
+
 
 
 def process_video(video_path, output_path):
@@ -70,7 +83,7 @@ def process_video(video_path, output_path):
     face_x_positions, timestamps = [], []
     last_x = None
     frame_count = 0
-    # print("Phase 1: Detecting faces...")
+    print("Phase 1: Detecting faces...")
 
     while True:
         ret, frame = video_capture.read()
@@ -97,7 +110,7 @@ def process_video(video_path, output_path):
     df = pd.DataFrame({'Timestamp': timestamps, 'Face_X_Position': face_x_positions}).bfill()
     df.to_csv('face_positions.csv', index=False)
 
-    # print("Phase 2: Reformatting video...")
+    print("Phase 2: Reformatting video...")
     video_capture = cv2.VideoCapture(video_path)
     interpolator = interp1d(df['Timestamp'], df['Face_X_Position'], kind='cubic', fill_value='extrapolate')
 
@@ -144,25 +157,26 @@ def process_video(video_path, output_path):
         out.release()
     video_capture.release()
     cv2.destroyAllWindows()
-    # print("✅ Video reformatted and saved!")
+    print("✅ Video reformatted and saved!")
 
 
 
 def combine_video_audio(video_path, audio_path, output_path):
     try:
         command = [
-        'ffmpeg',
-        "loglevel", "error",
-        '-i', video_path,
-        '-i', audio_path,
-        '-c:v', 'copy',
-        '-c:a', 'aac',
-        '-strict', 'experimental',
-        '-map', '0:v:0',
-        '-map', '1:a:0',
-        '-shortest',
-        output_path
-    ]
+    'ffmpeg',
+    #'-loglevel', 'error',
+    '-y',
+    '-i', video_path,       # your original video
+    '-i', audio_path,       # your new AAC audio
+    '-c:v', 'copy',         # skip video encoding
+    '-c:a', 'copy',         # skip audio encoding (since it's AAC already)
+    '-map', '0:v:0',        # take video from first input
+    '-map', '1:a:0',        # take audio from second input
+    '-shortest',            # cut to the shortest stream (avoids trailing silence/black)
+    output_path
+]
+
         subprocess.run(command, check=True)
     except Exception as e:
         print(f"Error combining video and audio: {e}")
@@ -187,7 +201,7 @@ def add_subtitles(video_path, subtitle_path, output_path):
 
         command = [
             'ffmpeg',
-            "loglevel", "error",
+            "-loglevel", "error",
             '-i', video_file,
             '-vf', f"subtitles={subtitle_file}:force_style='FontName=Roboto,Alignment=2,MarginV=75,FontSize=14,Bold=1,PrimaryColour=&HFFFF&'",
             '-c:a', 'copy',
@@ -202,25 +216,35 @@ def add_subtitles(video_path, subtitle_path, output_path):
         print(f"Unexpected error: {str(e)}")
 
 def process_all_segments():
-    filepath = input("SRT file name: ")
-    input_video = f'C:\\Users\\pcofp\\Desktop\\Python\\{input("Enter the video file name: ")}'
-    executioner.segment_srt_pipeline(filepath)
-    df = pd.read_csv('segments.csv')
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+
+    filepath = input("Enter SRT file name (e.g., subtitles.srt): ").strip()
+    input_video_name = input("Enter video file name (e.g., video.mp4): ").strip()
+
+    srt_path = os.path.join(script_dir, filepath)
+    input_video = os.path.join(script_dir, input_video_name)
+
+    override = input("Type override code to use existing segments.csv (leave blank to regenerate): ")
+    if override == "y":
+        print("⚠️: Using existing segments.csv (no new segmentation will be performed).")
+    else:
+        segmenter = VideoSegmenter()
+        segmenter.process_file(srt_path)
+
+    df = pd.read_csv(os.path.join(script_dir, 'segments.csv'))
 
     df['Start'] = df['Start'].apply(lambda s: s if ':' in s else f"0:{s}")
     df['End'] = df['End'].apply(lambda s: s if ':' in s else f"0:{s}")
     df['Start_seconds'] = pd.to_timedelta(df['Start']).dt.total_seconds().astype(int)
     df['End_seconds'] = pd.to_timedelta(df['End']).dt.total_seconds().astype(int)
 
-    
-
     for idx, row in df.iterrows():
         start = row['Start_seconds']
         end = row['End_seconds']
 
         print(f"\n--- Processing Segment {idx} | {start}s to {end}s ---")
-
-        base_path = f'C:\\Users\\pcofp\\Desktop\\Python\\temp\\segment_{idx}'
+        temp_dir = os.path.join(script_dir,"temp")
+        base_path = os.path.join(temp_dir, f"segment_{idx}")
         trimmed_output = base_path + '.mp4'
         reformatted_output = base_path + '_reformatted.mp4'
         audio_path = base_path + '.mp3'
@@ -233,15 +257,32 @@ def process_all_segments():
         combine_video_audio(reformatted_output, audio_path, combined_output)
         generate_subtitles(combined_output, subtitle_path)
         add_subtitles(combined_output, subtitle_path, final_output)
-        os.remove(trimmed_output)
-        os.remove(reformatted_output)
-        os.remove(audio_path)
-        os.remove(combined_output)
-        os.remove(subtitle_path)
+
+        for f in [trimmed_output, reformatted_output, audio_path, combined_output, subtitle_path]:
+            if os.path.exists(f):
+                os.remove(f)
+
     print("\n✅ All segments processed successfully.")
+
 
 if __name__ == "__main__":
     try:
         process_all_segments()
     except Exception as e:
         print(f"❌ Fatal error: {e}")
+
+'''
+
+if you are ever bored:
+
+Add-Type -AssemblyName System.speech
+$speak = New-Object System.Speech.Synthesis.SpeechSynthesizer
+$speak.SelectVoice('Microsoft Zira Desktop')
+$RandomCatFact = (ConvertFrom-Json (Invoke-WebRequest -Uri "https://catfact.ninja/fact" -UseBasicParsing).Content).fact
+Write-Host $RandomCatFact
+$speak.Speak("did you know that $RandomCatFact")
+
+type that into powershell
+'''
+
+        
