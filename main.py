@@ -2,7 +2,6 @@ import face_recognition
 import cv2
 import pandas as pd
 import numpy as np
-import assemblyai as aai
 import os
 import subprocess
 from executioner import *
@@ -11,9 +10,7 @@ from tqdm import tqdm
 from scipy.interpolate import CubicSpline
 import json
 import csv
-
-# AssemblyAI API Key
-aai.settings.api_key = ''
+from datetime import timedelta
 
 def print_progress_bar(iteration, total, prefix='', suffix='', length=100):
     percent = f"{100 * (iteration / float(total)):.1f}"
@@ -206,15 +203,48 @@ def process_video_and_audio(video_path, face_csv_path, output_path):
     print(f"Done — output saved to {output_path}")
 
 
-def generate_subtitles(video_path, subtitle_path):
-    # print("🎧 Transcribing audio...")
-    transcriber = aai.Transcriber(config=aai.TranscriptionConfig(speech_model=aai.SpeechModel.nano))
-    transcript = transcriber.transcribe(video_path)
-    subtitles = transcript.export_subtitles_srt()
+def seconds_to_srt_time(seconds):
+    """Convert seconds (float/int) to pysrt.SubRipTime."""
+    td = timedelta(seconds=seconds)
+    # Extract hours, minutes, seconds, milliseconds
+    hours, remainder = divmod(td.seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    milliseconds = int(td.microseconds / 1000)
+    return pysrt.SubRipTime(hours=hours, minutes=minutes, seconds=secs, milliseconds=milliseconds)
 
-    with open(subtitle_path, 'w') as f:
-        f.write(subtitles)
-    # print("✅ Subtitle file created successfully!")
+def extract_srt(input_srt_path, output_srt_path, start_seconds, end_seconds):
+    """
+    Extract part of an SRT file between start_seconds and end_seconds and save as a new SRT file.
+    
+    Parameters:
+        input_srt_path (str): Path to the original SRT file.
+        output_srt_path (str): Path to save the new SRT file.
+        start_seconds (float or int): Start time in seconds.
+        end_seconds (float or int): End time in seconds.
+    """
+    subs = pysrt.open(input_srt_path, encoding='utf-8')
+
+    start = seconds_to_srt_time(start_seconds)
+    end = seconds_to_srt_time(end_seconds)
+
+    # Filter subtitles in the range
+    selected_subs = pysrt.SubRipFile(
+        [sub for sub in subs if sub.start >= start and sub.end <= end]
+    )
+
+    # Shift start time to 0:00:00
+    if selected_subs:
+        first_start_seconds = (
+            selected_subs[0].start.hours * 3600 +
+            selected_subs[0].start.minutes * 60 +
+            selected_subs[0].start.seconds +
+            selected_subs[0].start.milliseconds / 1000.0
+        )
+        selected_subs.shift(seconds=-first_start_seconds)
+
+    selected_subs.save(output_srt_path, encoding='utf-8')
+    print(f"✅ Extracted subtitles saved to {output_srt_path}")
+
 
 def add_subtitles(video_path, subtitle_path, output_path):
     try:
@@ -278,7 +308,7 @@ def process_all_segments():
 
         cut_video(input_video, trimmed_output, start, end)
         process_video_and_audio(trimmed_output,face_csv_path='face_position.csv', output_path= combined_output)
-        generate_subtitles(combined_output, subtitle_path)
+        extract_srt(srt_path, subtitle_path, start, end)
         add_subtitles(combined_output, subtitle_path, final_output)
 
         for f in [trimmed_output, reformatted_output, combined_output, subtitle_path]:
