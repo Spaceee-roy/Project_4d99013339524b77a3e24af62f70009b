@@ -13,7 +13,7 @@ import json
 import csv
 
 # AssemblyAI API Key
-aai.settings.api_key = '4d99013339524b77a3e24af62f70009b'
+aai.settings.api_key = ''
 
 def print_progress_bar(iteration, total, prefix='', suffix='', length=100):
     percent = f"{100 * (iteration / float(total)):.1f}"
@@ -63,20 +63,16 @@ def cut_video(input_path, output_path, start_time, end_time):
 
 
 def process_video_and_audio(video_path, face_csv_path, output_path):
-
     video_path = os.path.abspath(video_path)
     face_csv_path = os.path.abspath(face_csv_path)
     output_path = os.path.abspath(output_path)
 
     """
-    1. Detect face x-positions every 1s.
-    2. Interpolate the x-positions over time.
-    3. Crop each frame centered on interpolated face position.
-    4. Save each cropped frame as an image.
-    5. Use ffmpeg to stitch cropped images and combine with original audio.
+    1. Locate and record face position in csv file
+    2. Retrieve and crop face into a 9:16 format.
     """
 
-    start_time = time.time()
+    
 
     print("📸 Phase 1: Detecting faces and generating timeline...")
 
@@ -90,25 +86,28 @@ def process_video_and_audio(video_path, face_csv_path, output_path):
     total_frames = int(video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
 
     face_x_positions, timestamps = [], []
-    last_x = frame_width // 2
+    last_x = frame_width // 2  # default to center
 
-    for frame_idx in tqdm(range(0, total_frames, int(fps))):  # every 1 second
+    # Run detection once per second
+    for frame_idx in tqdm(range(0, total_frames, int(fps))):
         video_capture.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
         ret, frame = video_capture.read()
-        if not ret:
+        if not ret: # if there is no frames stop trying
             break
 
         current_time = frame_idx / fps
         face_locations = face_recognition.face_locations(frame)
 
         if face_locations:
-            top, right, bottom, left = face_locations[0]
-            center_x = (right + left) // 2
-            last_x = center_x
-        else:
-            center_x = last_x
+            top, right, bottom, left = face_locations[0] # top and bottom needed to soak up value 0 and 2 outputed from face_locations(0)
+            face_center_x = (right + left) / 2 # gets the boundary and finds the center
 
-        face_x_positions.append(center_x)
+
+            last_x = face_center_x
+        else:
+            face_center_x = last_x # fail safe
+
+        face_x_positions.append(face_center_x)
         timestamps.append(current_time)
 
     video_capture.release()
@@ -118,29 +117,26 @@ def process_video_and_audio(video_path, face_csv_path, output_path):
 
     print("✂️ Phase 2: Cropping and saving frames...")
 
+    # Get video dimensions
     probe_cmd = [
-    "ffprobe", "-v", "error",
-    "-select_streams", "v:0",
-    "-show_entries", "stream=width,height",
-    "-of", "json", video_path
+        "ffprobe", "-v", "error",
+        "-select_streams", "v:0",
+        "-show_entries", "stream=width,height",
+        "-of", "json", video_path
     ]
     proc = subprocess.run(probe_cmd, capture_output=True, text=True, check=True)
     video_info = json.loads(proc.stdout)
     video_width = int(video_info["streams"][0]["width"])
     video_height = int(video_info["streams"][0]["height"])
     print(f"Source video: {video_width} x {video_height}")
-    scale_x = video_width / 1920
-    # -------------------------------------------------
-    # 2. Set desired crop size (9:16 aspect ratio)
-    # -------------------------------------------------
+
+    # Desired crop: 9:16 portrait aspect ratio
     desired_width = (9 / 16) * video_height
     dw_int = int(round(desired_width))
     oh_int = video_height
     half_w = desired_width / 2.0
 
-    # -------------------------------------------------
-    # 3. Load CSV face center positions and timestamps
-    # -------------------------------------------------
+    # Load CSV data
     times = []
     face_centers = []
     with open(face_csv_path, newline="") as f:
@@ -149,19 +145,16 @@ def process_video_and_audio(video_path, face_csv_path, output_path):
             t = float(r["Timestamp"])
             cx = float(r["Face_X_Position"])
             times.append(t)
-            face_centers.append(cx)
+            adjustcx = cx - half_w
+            face_centers.append(adjustcx)
 
     if len(times) < 2:
         raise SystemExit("Need at least two CSV points for interpolation.")
 
-    # -------------------------------------------------
-    # 4. Smooth face center positions with cubic spline
-    # -------------------------------------------------
+    # Smooth with cubic spline
     cs = CubicSpline(times, face_centers, bc_type='natural')
 
-    # -------------------------------------------------
-    # 5. Helper to clamp crop left edge to video bounds
-    # -------------------------------------------------
+    # Clamp function
     def clamp_left_from_center(center_x):
         left = center_x - half_w
         if left < 0:
@@ -170,26 +163,20 @@ def process_video_and_audio(video_path, face_csv_path, output_path):
             return float(video_width - desired_width)
         return left
 
-    # -------------------------------------------------
-    # 6. Build FFmpeg expression to keep face centered
-    # -------------------------------------------------
+    # Build ffmpeg X-position expression
     seg_terms = []
     for i in range(len(times) - 1):
         t0 = times[i]
         t1 = times[i + 1]
 
-        # Get smoothed centers
         cx0 = float(cs(t0))
         cx1 = float(cs(t1))
 
-        # Convert to left edges and clamp
         x0 = clamp_left_from_center(cx0)
         x1 = clamp_left_from_center(cx1)
 
-        # Slope for linear movement
         slope = 0.0 if abs(t1 - t0) < 1e-6 else (x1 - x0) / (t1 - t0)
 
-        # Build FFmpeg term
         term = (
             f"(between(t\\,{t0:.3f}\\,{t1:.3f})*("
             f"{x0:.3f}+({slope:.6f})*(t-{t0:.3f})"
@@ -197,22 +184,16 @@ def process_video_and_audio(video_path, face_csv_path, output_path):
         )
         seg_terms.append(term)
 
-    # Constant after last timestamp
     last_center = clamp_left_from_center(face_centers[-1])
     tail = f"({last_center:.3f})"
 
-    # Full X-position expression
     expr = "(" + "+".join(seg_terms) + "+" + tail + ")"
 
-    # -------------------------------------------------
-    # 7. Create final crop filter string
-    # -------------------------------------------------
+    # Final crop filter
     crop_filter = f"crop={dw_int}:{oh_int}:{expr}:0"
     print("Crop filter length:", len(crop_filter))
 
-    # -------------------------------------------------
-    # 8. Run ffmpeg to create cropped video
-    # -------------------------------------------------
+    # Run ffmpeg
     cmd = [
         "ffmpeg", "-y",
         "-i", video_path,
