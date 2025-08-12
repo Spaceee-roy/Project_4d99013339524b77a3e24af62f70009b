@@ -2,12 +2,15 @@ import face_recognition
 import cv2
 import pandas as pd
 import numpy as np
-from scipy.interpolate import interp1d
 import assemblyai as aai
 import os
 import subprocess
 from executioner import *
-
+import time
+from tqdm import tqdm
+from scipy.interpolate import CubicSpline
+import json
+import csv
 
 # AssemblyAI API Key
 aai.settings.api_key = '4d99013339524b77a3e24af62f70009b'
@@ -38,28 +41,17 @@ def cut_video(input_path, output_path, start_time, end_time):
         return False
 
     trim_command = [
-        "ffmpeg", "-y",
-        "-ss", str(start_time),
-        "-i", input_path,
-        "-t", str(end_time - start_time),
-        "-c", "copy",  # REMUX: copy streams, no encoding, encoding it is way more resource intensive and i lost a peaceful day and sleep cause of this; my eyes hurt note to self dont use -c:a libx256 ever again i have written 246 characters
-        output_path,
+       "ffmpeg", "-y",
+    "-ss", str(start_time),
+    "-to", str(end_time),
+    "-i", input_path,
+    "-c", "copy",
+    output_path
     ]
 
     print(f"[cut_video] Running command: {' '.join(trim_command)}")
-    result = subprocess.run(trim_command, capture_output=True, text=True)
-    audio_path = output_path.replace('.mp4', '.aac')
-    audio_command = [
-            "ffmpeg", "-y",
-            "-loglevel", "error",   
-            "-i", output_path,      
-            "-vn",                 
-            "-acodec", "aac",                         
-            "-map", "a",            
-    audio_path  
-        ]
-    subprocess.run(audio_command, check=True)
-    print(f"[cut_video] 🎧 Audio extracted: {audio_path}")
+    result = subprocess.run(trim_command, capture_output=True, text=True, )
+
 
     if result.returncode != 0:
         print(f"[cut_video] ffmpeg error:\n{result.stderr.strip()}")
@@ -68,7 +60,26 @@ def cut_video(input_path, output_path, start_time, end_time):
     print(f"[cut_video] ✅ Trimmed video saved: {output_path}")
     return True
 
-def process_video(video_path, output_path):
+
+
+def process_video_and_audio(video_path, face_csv_path, output_path):
+
+    video_path = os.path.abspath(video_path)
+    face_csv_path = os.path.abspath(face_csv_path)
+    output_path = os.path.abspath(output_path)
+
+    """
+    1. Detect face x-positions every 1s.
+    2. Interpolate the x-positions over time.
+    3. Crop each frame centered on interpolated face position.
+    4. Save each cropped frame as an image.
+    5. Use ffmpeg to stitch cropped images and combine with original audio.
+    """
+
+    start_time = time.time()
+
+    print("📸 Phase 1: Detecting faces and generating timeline...")
+
     video_capture = cv2.VideoCapture(video_path)
     if not video_capture.isOpened():
         raise Exception("Could not open video file")
@@ -78,115 +89,141 @@ def process_video(video_path, output_path):
     frame_height = int(video_capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
     total_frames = int(video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    print("Phase 1: Detecting faces (1 per second)...")
+    face_x_positions, timestamps = [], []
+    last_x = frame_width // 2
 
-    # STEP 1: Face detection every 1 second
-    face_x_positions = []
-    timestamps = []
-    last_x = None
-    scale_factor = 0.15
-    interval = int(fps * 1.0)
-    frame_number = 0
-
-    while frame_number < total_frames:
-        video_capture.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+    for frame_idx in tqdm(range(0, total_frames, int(fps))):  # every 1 second
+        video_capture.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
         ret, frame = video_capture.read()
         if not ret:
             break
 
-        # Resize for faster processing
-        small_frame = cv2.resize(frame, (0, 0), fx=scale_factor, fy=scale_factor)
-        face_locations = face_recognition.face_locations(small_frame, model='hog')
+        current_time = frame_idx / fps
+        face_locations = face_recognition.face_locations(frame)
 
         if face_locations:
             top, right, bottom, left = face_locations[0]
-            center_x = ((right + left) // 2) / scale_factor  # Scale back to original
+            center_x = (right + left) // 2
             last_x = center_x
         else:
-            center_x = last_x if last_x is not None else frame_width // 2
+            center_x = last_x
 
-        current_time = frame_number / fps
-        timestamps.append(current_time)
         face_x_positions.append(center_x)
-
-        frame_number += interval
+        timestamps.append(current_time)
 
     video_capture.release()
 
-    # Fill gaps and save CSV
     df = pd.DataFrame({'Timestamp': timestamps, 'Face_X_Position': face_x_positions}).bfill()
-    df.to_csv('face_positions.csv', index=False)
+    df.to_csv(face_csv_path, index=False)
 
-    print("Phase 2: Cropping and exporting video...")
+    print("✂️ Phase 2: Cropping and saving frames...")
 
-    # STEP 2: Crop based on interpolated center positions
-    video_capture = cv2.VideoCapture(video_path)
-    interpolator = interp1d(df['Timestamp'], df['Face_X_Position'], kind='cubic', fill_value='extrapolate')
+    probe_cmd = [
+    "ffprobe", "-v", "error",
+    "-select_streams", "v:0",
+    "-show_entries", "stream=width,height",
+    "-of", "json", video_path
+    ]
+    proc = subprocess.run(probe_cmd, capture_output=True, text=True, check=True)
+    video_info = json.loads(proc.stdout)
+    video_width = int(video_info["streams"][0]["width"])
+    video_height = int(video_info["streams"][0]["height"])
+    print(f"Source video: {video_width} x {video_height}")
+    scale_x = video_width / 1920
+    # -------------------------------------------------
+    # 2. Set desired crop size (9:16 aspect ratio)
+    # -------------------------------------------------
+    desired_width = (9 / 16) * video_height
+    dw_int = int(round(desired_width))
+    oh_int = video_height
+    half_w = desired_width / 2.0
 
-    new_height = frame_height
-    new_width = int((9 / 16) * new_height)
-    fourcc = cv2.VideoWriter_fourcc(*'XVID')  # Faster than mp4v
-    out = cv2.VideoWriter(output_path, fourcc, fps, (new_width, new_height))
+    # -------------------------------------------------
+    # 3. Load CSV face center positions and timestamps
+    # -------------------------------------------------
+    times = []
+    face_centers = []
+    with open(face_csv_path, newline="") as f:
+        rdr = csv.DictReader(f)
+        for r in rdr:
+            t = float(r["Timestamp"])
+            cx = float(r["Face_X_Position"])
+            times.append(t)
+            face_centers.append(cx)
 
-    frame_count = 0
-    last_center = frame_width // 2
+    if len(times) < 2:
+        raise SystemExit("Need at least two CSV points for interpolation.")
 
-    while True:
-        ret, frame = video_capture.read()
-        if not ret:
-            break
+    # -------------------------------------------------
+    # 4. Smooth face center positions with cubic spline
+    # -------------------------------------------------
+    cs = CubicSpline(times, face_centers, bc_type='natural')
 
-        current_time = frame_count / fps
-        try:
-            x_position = interpolator(current_time)
-            crop_center = int(x_position if not np.isnan(x_position) else last_center)
-            last_center = crop_center
+    # -------------------------------------------------
+    # 5. Helper to clamp crop left edge to video bounds
+    # -------------------------------------------------
+    def clamp_left_from_center(center_x):
+        left = center_x - half_w
+        if left < 0:
+            return 0.0
+        elif left + desired_width > video_width:
+            return float(video_width - desired_width)
+        return left
 
-            crop_left = max(0, crop_center - new_width // 2)
-            crop_right = min(frame_width, crop_left + new_width)
+    # -------------------------------------------------
+    # 6. Build FFmpeg expression to keep face centered
+    # -------------------------------------------------
+    seg_terms = []
+    for i in range(len(times) - 1):
+        t0 = times[i]
+        t1 = times[i + 1]
 
-            if crop_right - crop_left < new_width:
-                crop_left = max(0, crop_right - new_width)
+        # Get smoothed centers
+        cx0 = float(cs(t0))
+        cx1 = float(cs(t1))
 
-            cropped_frame = frame[:, crop_left:crop_right]
+        # Convert to left edges and clamp
+        x0 = clamp_left_from_center(cx0)
+        x1 = clamp_left_from_center(cx1)
 
-            if cropped_frame.shape[1] != new_width:
-                cropped_frame = cv2.resize(cropped_frame, (new_width, new_height))
+        # Slope for linear movement
+        slope = 0.0 if abs(t1 - t0) < 1e-6 else (x1 - x0) / (t1 - t0)
 
-            out.write(cropped_frame)
+        # Build FFmpeg term
+        term = (
+            f"(between(t\\,{t0:.3f}\\,{t1:.3f})*("
+            f"{x0:.3f}+({slope:.6f})*(t-{t0:.3f})"
+            f"))"
+        )
+        seg_terms.append(term)
 
-        except Exception as e:
-            print(f"⚠️ Frame {frame_count} error: {e}")
+    # Constant after last timestamp
+    last_center = clamp_left_from_center(face_centers[-1])
+    tail = f"({last_center:.3f})"
 
-        frame_count += 1
+    # Full X-position expression
+    expr = "(" + "+".join(seg_terms) + "+" + tail + ")"
 
-    out.release()
-    video_capture.release()
-    cv2.destroyAllWindows()
-    print("✅ Done — output saved to:", output_path)
+    # -------------------------------------------------
+    # 7. Create final crop filter string
+    # -------------------------------------------------
+    crop_filter = f"crop={dw_int}:{oh_int}:{expr}:0"
+    print("Crop filter length:", len(crop_filter))
 
+    # -------------------------------------------------
+    # 8. Run ffmpeg to create cropped video
+    # -------------------------------------------------
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", video_path,
+        "-vf", crop_filter,
+        "-c:a", "copy",
+        output_path
+    ]
+    print("Running ffmpeg...")
+    subprocess.run(cmd, check=True)
+    print(f"Done — output saved to {output_path}")
 
-
-
-def combine_video_audio(video_path, audio_path, output_path):
-    try:
-        command = [
-    'ffmpeg',
-    #'-loglevel', 'error',
-    '-y',
-    '-i', video_path,       # your original video
-    '-i', audio_path,       # your new AAC audio
-    '-c:v', 'copy',         # skip video encoding
-    '-c:a', 'copy',         # skip audio encoding (since it's AAC already)
-    '-map', '0:v:0',        # take video from first input
-    '-map', '1:a:0',        # take audio from second input
-    '-shortest',            # cut to the shortest stream (avoids trailing silence/black)
-    output_path
-]
-
-        subprocess.run(command, check=True)
-    except Exception as e:
-        print(f"Error combining video and audio: {e}")
 
 def generate_subtitles(video_path, subtitle_path):
     # print("🎧 Transcribing audio...")
@@ -208,7 +245,7 @@ def add_subtitles(video_path, subtitle_path, output_path):
 
         command = [
             'ffmpeg',
-            "-loglevel", "error",
+            # "-loglevel", "error",
             '-i', video_file,
             '-vf', f"subtitles={subtitle_file}:force_style='FontName=Roboto,Alignment=2,MarginV=75,FontSize=14,Bold=1,PrimaryColour=&HFFFF&'",
             '-c:a', 'copy',
@@ -254,18 +291,16 @@ def process_all_segments():
         base_path = os.path.join(temp_dir, f"segment_{idx}")
         trimmed_output = base_path + '.mp4'
         reformatted_output = base_path + '_reformatted.mp4'
-        audio_path = base_path + '.aac'
         combined_output = base_path + '_with_audio.mp4'
         subtitle_path = base_path + '.srt'
         final_output = base_path + '_final.mp4'
 
         cut_video(input_video, trimmed_output, start, end)
-        process_video(trimmed_output, reformatted_output)
-        combine_video_audio(reformatted_output, audio_path, combined_output)
+        process_video_and_audio(trimmed_output,face_csv_path='face_position.csv', output_path= combined_output)
         generate_subtitles(combined_output, subtitle_path)
         add_subtitles(combined_output, subtitle_path, final_output)
 
-        for f in [trimmed_output, reformatted_output, audio_path, combined_output, subtitle_path]:
+        for f in [trimmed_output, reformatted_output, combined_output, subtitle_path]:
             if os.path.exists(f):
                 os.remove(f)
 
@@ -274,7 +309,11 @@ def process_all_segments():
 
 if __name__ == "__main__":
     try:
+        start_time = time.time()
         process_all_segments()
+        total_time = time.time() - start_time
+        print(f"🎉 Total time: {total_time:.2f} seconds")
+        
     except Exception as e:
         print(f"❌ Fatal error: {e}")
 
@@ -291,5 +330,3 @@ $speak.Speak("did you know that $RandomCatFact")
 
 type that into powershell
 '''
-
-        
