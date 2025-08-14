@@ -17,11 +17,11 @@ import subprocess
 # ---------------------------------
 # Config: use external config if available; otherwise fall back to sane defaults
 # ---------------------------------
-try:
-    import config  # type: ignore
-    HAVE_EXTERNAL_CONFIG = True
-except Exception:
-    HAVE_EXTERNAL_CONFIG = False
+# try:
+#     import config  # type: ignore
+#     HAVE_EXTERNAL_CONFIG = True
+# except Exception:
+HAVE_EXTERNAL_CONFIG = False
 
 class _Cfg:
     # Core timings
@@ -93,7 +93,7 @@ class _Cfg:
     MAX_TITLE_LEN = 72
     MAX_THUMB_LEN = 28
 
-CFG = config if HAVE_EXTERNAL_CONFIG else _Cfg()
+CFG = _Cfg()
 
 # ---------------------------------
 # Utility
@@ -559,12 +559,38 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Generate viral micro-clip proposals from SRT")
     parser.add_argument('srt', help='Path to subtitle file (.srt)')
+    parser.add_argument('--video', required=True, help='Path to the original full video file')
     parser.add_argument('--segments_csv', default='segments.csv', help='Detailed segments CSV output path')
     parser.add_argument('--viral_csv', default='viral_clips.csv', help='Top viral clips CSV output path')
     parser.add_argument('--top_k', type=int, default=10, help='How many top clips to keep')
-    parser.add_argument('--export_clips', action='store_true', help='If set, run ffmpeg to export the top clips to files')
     parser.add_argument('--keep_all', action='store_true', help='If set, also save the full segments CSV (segments_csv)')
+    parser.add_argument('--export_clips', action='store_true', help='If set, run ffmpeg to export the top clips to files')
     args = parser.parse_args()
 
     seg = VideoSegmenter()
-    seg.process_file(args.srt, output_path=args.segments_csv, clips_path=args.viral_csv, top_k=args.top_k)
+    seg.process_file(
+        args.srt,
+        output_path=args.segments_csv,
+        clips_path=args.viral_csv,
+        top_k=args.top_k
+    )
+
+    # Only export clips if flag is set
+    if args.export_clips:
+        import csv, subprocess, os
+        with open(args.viral_csv, newline='', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            for i, row in enumerate(reader, start=1):
+                start_time = row['Start']
+                end_time = row['End']
+                out_name = f"topclip_{i:02d}.mp4"
+                cmd = [
+                    "ffmpeg", "-y",
+                    "-i", args.video,
+                    "-ss", start_time,
+                    "-to", end_time,
+                    "-c", "copy",
+                    out_name
+                ]
+                subprocess.run(cmd, check=True)
+                print(f"[OK] Exported {out_name}")
