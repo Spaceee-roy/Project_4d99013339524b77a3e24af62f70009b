@@ -13,7 +13,7 @@ from keybert import KeyBERT
 from transformers import pipeline
 import logging
 import subprocess
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime
 # ---------------------------------
 # Config: use external config if available; otherwise fall back to sane defaults
 # ---------------------------------
@@ -110,38 +110,50 @@ def seconds_to_time(sec: float) -> time:
     seconds = int(sec % 60)
     milliseconds = int((sec - int(sec)) * 1000)
     return time(hours, minutes, seconds, milliseconds*1000)
+
+
 def merge_followups(all_segments, selected_segments, max_length=90, max_gap=1, short_followup=5):
-        final_clips = []
-        for clip in selected_segments:
-            clip = clip.copy()
-            idx = all_segments.index(clip)
+    final_clips = []
+    for clip in selected_segments:
+        clip = clip.copy()
+        idx = all_segments.index(clip)
 
-            # Merge follow-up clips if they are short and close in time
-            while idx + 1 < len(all_segments):
-                next_seg = all_segments[idx + 1]
+        while idx + 1 < len(all_segments):
+            next_seg = all_segments[idx + 1]
 
-                gap = (datetime.combine(date.min, next_seg['Start']) -
-                    datetime.combine(date.min, clip['End'])).total_seconds()
-                duration = (datetime.combine(date.min, next_seg['End']) -
-                            datetime.combine(date.min, next_seg['Start'])).total_seconds()
+            gap = (datetime.combine(date.min, next_seg['Start']) -
+                   datetime.combine(date.min, clip['End'])).total_seconds()
+            duration = (datetime.combine(date.min, next_seg['End']) -
+                        datetime.combine(date.min, next_seg['Start'])).total_seconds()
 
-                if gap <= max_gap and duration <= short_followup:
-                    # Merge text preview
-                    clip['Preview'] += " " + next_seg.get('Preview', '')
-                    clip['End'] = next_seg['End']
-                    idx += 1
-                else:
-                    break
-
-            # Ensure we don't exceed max length
+            # Stop if too long already
             total_duration = (datetime.combine(date.min, clip['End']) -
-                            datetime.combine(date.min, clip['Start'])).total_seconds()
-            if total_duration > max_length:
-                clip['End'] = (datetime.combine(date.min, clip['Start']) +
-                            timedelta(seconds=max_length)).time()
+                              datetime.combine(date.min, clip['Start'])).total_seconds()
+            if total_duration >= max_length:
+                break
 
-            final_clips.append(clip)
-        return final_clips
+            # Merge if close and short
+            if gap <= max_gap and duration <= short_followup:
+                clip['Preview'] += " " + next_seg.get('Preview', '')
+                clip['End'] = next_seg['End']
+                idx += 1
+
+                # If we end with punctuation, stop merging
+                if clip['Preview'].strip().endswith(('.', '?', '!')):
+                    break
+            else:
+                break
+
+        # Cap clip to max_length just in case
+        total_duration = (datetime.combine(date.min, clip['End']) -
+                          datetime.combine(date.min, clip['Start'])).total_seconds()
+        if total_duration > max_length:
+            clip['End'] = (datetime.combine(date.min, clip['Start']) +
+                           timedelta(seconds=max_length)).time()
+
+        final_clips.append(clip)
+    return final_clips
+
 
 
 # ---------------------------------
