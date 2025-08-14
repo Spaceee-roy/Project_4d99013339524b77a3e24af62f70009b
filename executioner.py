@@ -111,12 +111,35 @@ def seconds_to_time(sec: float) -> time:
     milliseconds = int((sec - int(sec)) * 1000)
     return time(hours, minutes, seconds, milliseconds*1000)
 
-
+def extend_to_sentence_end(all_segments, selected_segments, max_length=90):
+        
+        final_clips = []
+        for clip in selected_segments:
+            clip = clip.copy()
+            idx = all_segments.index(clip)
+            # Keep appending segments until the sentence ends
+            while (not clip['Text'].strip().endswith(('.', '?', '!'))
+                and clip['End'] < all_segments[-1]['End']):
+                if idx + 1 < len(all_segments):
+                    next_seg = all_segments[idx + 1]
+                    clip['Text'] += " " + next_seg['Text']
+                    clip['End'] = next_seg['End']
+                    idx += 1
+                else:
+                    break
+            # Hard limit so clips don't get too long
+            if clip['End'] - clip['Start'] > max_length:
+                clip['End'] = clip['Start'] + max_length
+            final_clips.append(clip)
+        return final_clips
 # ---------------------------------
 # VideoSegmenter
 # ---------------------------------
 class VideoSegmenter:
     """SRT → viral micro-clip proposals (timestamps + packaging metadata)."""
+    
+
+
 
     def __init__(self):
         logging.info("Initializing VideoSegmenter and loading models...")
@@ -410,7 +433,7 @@ class VideoSegmenter:
         if topic_first:
             base_tags.insert(1, f"#{topic_first[:18]}")
         return ' '.join(dict.fromkeys(base_tags))
-
+    
     # ----------
     # Main
     # ----------
@@ -489,7 +512,12 @@ class VideoSegmenter:
 
         # Keep top_k viral clips, strictly the best ones only
         viral_rows_sorted = sorted(viral_rows, key=lambda r: r['Score'], reverse=True)
+        print(viral_rows[0])
         top_viral = viral_rows_sorted[:top_k]
+
+        # Make sure to pass the full list of segments (viral_rows_sorted or viral_rows)
+        top_viral = extend_to_sentence_end(viral_rows_sorted, top_viral)
+
 
         viral_df = pd.DataFrame(top_viral)
         viral_df.to_csv(clips_path, index=False)
@@ -511,7 +539,7 @@ class VideoSegmenter:
             logging.info(f"Exported {len(exported)} clip(s).")
         return
 
-
+    
     # ----------
     # Helpers
     # ----------
