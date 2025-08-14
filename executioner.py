@@ -13,7 +13,7 @@ from keybert import KeyBERT
 from transformers import pipeline
 import logging
 import subprocess
-
+from datetime import date, timedelta
 # ---------------------------------
 # Config: use external config if available; otherwise fall back to sane defaults
 # ---------------------------------
@@ -25,7 +25,7 @@ HAVE_EXTERNAL_CONFIG = False
 
 class _Cfg:
     # Core timings
-    MAX_DURATION_SECONDS: int = 20               # hard cap for viral micro-clips
+    MAX_DURATION_SECONDS: int = 30               # hard cap for viral micro-clips
     MIN_DURATION_SECONDS: int = 7                # keep them punchy
     MIN_SENTENCES_PER_SEGMENT: int = 1
 
@@ -110,28 +110,40 @@ def seconds_to_time(sec: float) -> time:
     seconds = int(sec % 60)
     milliseconds = int((sec - int(sec)) * 1000)
     return time(hours, minutes, seconds, milliseconds*1000)
-
-def extend_to_sentence_end(all_segments, selected_segments, max_length=90):
-        
+def merge_followups(all_segments, selected_segments, max_length=90, max_gap=1, short_followup=5):
         final_clips = []
         for clip in selected_segments:
             clip = clip.copy()
             idx = all_segments.index(clip)
-            # Keep appending segments until the sentence ends
-            while (not clip['Text'].strip().endswith(('.', '?', '!'))
-                and clip['End'] < all_segments[-1]['End']):
-                if idx + 1 < len(all_segments):
-                    next_seg = all_segments[idx + 1]
-                    clip['Text'] += " " + next_seg['Text']
+
+            # Merge follow-up clips if they are short and close in time
+            while idx + 1 < len(all_segments):
+                next_seg = all_segments[idx + 1]
+
+                gap = (datetime.combine(date.min, next_seg['Start']) -
+                    datetime.combine(date.min, clip['End'])).total_seconds()
+                duration = (datetime.combine(date.min, next_seg['End']) -
+                            datetime.combine(date.min, next_seg['Start'])).total_seconds()
+
+                if gap <= max_gap and duration <= short_followup:
+                    # Merge text preview
+                    clip['Preview'] += " " + next_seg.get('Preview', '')
                     clip['End'] = next_seg['End']
                     idx += 1
                 else:
                     break
-            # Hard limit so clips don't get too long
-            if clip['End'] - clip['Start'] > max_length:
-                clip['End'] = clip['Start'] + max_length
+
+            # Ensure we don't exceed max length
+            total_duration = (datetime.combine(date.min, clip['End']) -
+                            datetime.combine(date.min, clip['Start'])).total_seconds()
+            if total_duration > max_length:
+                clip['End'] = (datetime.combine(date.min, clip['Start']) +
+                            timedelta(seconds=max_length)).time()
+
             final_clips.append(clip)
         return final_clips
+
+
 # ---------------------------------
 # VideoSegmenter
 # ---------------------------------
@@ -294,7 +306,9 @@ class VideoSegmenter:
         if re.search(r"\bbut\b", t):
             s += 0.25
         return s
+    from datetime import datetime, date, timedelta
 
+    
     # ----------
     # Topic extraction & scoring
     # ----------
@@ -512,11 +526,11 @@ class VideoSegmenter:
 
         # Keep top_k viral clips, strictly the best ones only
         viral_rows_sorted = sorted(viral_rows, key=lambda r: r['Score'], reverse=True)
-        print(viral_rows[0])
         top_viral = viral_rows_sorted[:top_k]
 
-        # Make sure to pass the full list of segments (viral_rows_sorted or viral_rows)
-        top_viral = extend_to_sentence_end(viral_rows_sorted, top_viral)
+        # Merge short follow-up sentences to avoid awkward cut-offs
+        top_viral = merge_followups(viral_rows_sorted, top_viral)
+
 
 
         viral_df = pd.DataFrame(top_viral)
