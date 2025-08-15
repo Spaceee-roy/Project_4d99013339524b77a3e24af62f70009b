@@ -306,7 +306,7 @@ def add_subtitles(video_path, subtitle_path, output_path):
         command = [
             'ffmpeg', '-y',
             '-i', video_path,
-            '-vf', f"subtitles={safe_subtitle_file}:force_style='FontName=Roboto,Alignment=2,MarginV=75,FontSize=14,Bold=1,PrimaryColour=&HFFFF&'",
+            '-vf', f"subtitles={safe_subtitle_file}:force_style='FontName=Roboto,Alignment=2,MarginV=75,MarginL=75,MarginR=75,FontSize=14,BorderStyle=3, Outline=0,Shadow=0,BackColour=&H00620AFA&,Bold=1,PrimaryColour=&HFFFFFF&'",
             '-c:a', 'copy',
             output_file
         ]
