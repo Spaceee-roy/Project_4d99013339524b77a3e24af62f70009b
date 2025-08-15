@@ -358,15 +358,9 @@ def process_all_top_clips(srt_path: str, input_video_path: str, top_k: int = 5, 
 
 
 if __name__ == '__main__':
-    import argparse
-    parser = argparse.ArgumentParser(description='Run viral segmenter -> crop -> burn subtitles pipeline (top clips only)')
-    parser.add_argument('srt', help='Path to the SRT file')
-    parser.add_argument('video', help='Path to the source video')
-    parser.add_argument('--top_k', type=int, default=5, help='How many top clips to process')
-    parser.add_argument('--keep_all', action='store_true', help='Keep the full segments.csv')
-    args = parser.parse_args()
+    
     srt = input("Enter srt path: ")
     video = input("Enter video path: ")
     start = time.time()
-    process_all_top_clips(start, video, top_k=5, keep_all= True)
+    process_all_top_clips(srt, video, top_k=5, keep_all= True)
     print(f"Total time: {time.time() - start:.1f}s")
