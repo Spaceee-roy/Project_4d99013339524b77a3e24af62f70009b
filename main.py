@@ -301,15 +301,12 @@ def extract_srt(input_srt_path, output_srt_path, start_seconds, end_seconds):
 
 def add_subtitles(video_path, subtitle_path, output_path):
     try:
-        workdir = os.path.dirname(os.path.abspath(video_path))
-        video_file = os.path.basename(video_path)
-        subtitle_file = os.path.abspath(subtitle_path)
         output_file = os.path.abspath(output_path)
-
+        safe_subtitle_file = subtitle_path.replace("\\", "/")
         command = [
             'ffmpeg', '-y',
             '-i', video_path,
-            '-vf', f"subtitles={subtitle_file}:force_style='FontName=Roboto,Alignment=2,MarginV=75,FontSize=14,Bold=1,PrimaryColour=&HFFFF&'",
+            '-vf', f"subtitles={safe_subtitle_file}:force_style='FontName=Roboto,Alignment=2,MarginV=75,FontSize=14,Bold=1,PrimaryColour=&HFFFF&'",
             '-c:a', 'copy',
             output_file
         ]
@@ -346,6 +343,7 @@ def process_all_segments():
     df['End'] = df['End'].apply(lambda s: s if ':' in s else f"0:{s}")
     df['Start_seconds'] = pd.to_timedelta(df['Start']).dt.total_seconds().astype(int)
     df['End_seconds'] = pd.to_timedelta(df['End']).dt.total_seconds().astype(int)
+    goodname = input_video_name.replace(".mp4", "")
 
     for idx, row in df.iterrows():
         start = row['Start_seconds']
@@ -355,7 +353,7 @@ def process_all_segments():
         temp_dir = os.path.join(script_dir, "temp")
         os.makedirs(temp_dir, exist_ok=True)
 
-        base_path = os.path.join(temp_dir, f"{input_video_name}_topclip_{idx:02d}.mp4")
+        base_path = os.path.join(temp_dir, f"{goodname.strip()}_topclip_{idx:02d}.mp4")
         trimmed_output = base_path + '.mp4'
         reformatted_output = base_path + '_reformatted.mp4'
         combined_output = base_path + '_with_audio.mp4'
