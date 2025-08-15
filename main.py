@@ -4,7 +4,7 @@ import csv
 import json
 import subprocess
 from datetime import timedelta
-import tqdm
+from tqdm import tqdm
 import pandas as pd
 import pysrt
 
@@ -73,7 +73,42 @@ def parse_time_like(t):
         return parts[0]*3600 + parts[1]*60 + parts[2]
     return 0.0
 
+def cut_video(input_path, output_path, start_time, end_time):
+    import shutil
 
+    # Ensure absolute paths
+    input_path = os.path.abspath(input_path)
+    output_path = os.path.abspath(output_path)
+
+    # Check input file exists
+    if not os.path.isfile(input_path):
+        print(f"[cut_video] ❌ Input file missing: {input_path}")
+        return False
+
+    # Check ffmpeg exists on PATH
+    if not shutil.which("ffmpeg"):
+        print("[cut_video] ❌ ffmpeg not found on PATH")
+        return False
+
+    trim_command = [
+       "ffmpeg", "-y",
+    "-ss", str(start_time),
+    "-to", str(end_time),
+    "-i", input_path,
+    "-c", "copy",
+    output_path
+    ]
+
+    print(f"[cut_video] Running command: {' '.join(trim_command)}")
+    result = subprocess.run(trim_command, capture_output=True, text=True, )
+
+
+    if result.returncode != 0:
+        print(f"[cut_video] ffmpeg error:\n{result.stderr.strip()}")
+        return False
+
+    print(f"[cut_video] ✅ Trimmed video saved: {output_path}")
+    return True
 # -----------------------------
 # Existing processing functions (adapted from your main.py)
 # - cut_video is no longer used for top clips because viral_segmenter will export trimmed clips
@@ -289,78 +324,62 @@ def add_subtitles(video_path, subtitle_path, output_path):
 # Orchestration: create top clips with Viral Segmenter then run your face/crop/subtitle pipeline
 # -----------------------------
 
-def process_all_top_clips(srt_path: str, input_video_path: str, top_k: int = 5, keep_all: bool = False):
+def process_all_segments():
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    srt_path = os.path.abspath(srt_path)
-    input_video_path = os.path.abspath(input_video_path)
 
-    if VideoSegmenter is None:
-        raise RuntimeError("Could not import VideoSegmenter. Make sure viral_segmenter.py is on the PYTHONPATH and importable.")
+    filepath = input("Enter SRT file name (e.g., subtitles.srt): ").strip()
+    input_video_name = input("Enter video file name (e.g., video.mp4): ").strip()
 
-    seg = VideoSegmenter()
-    # export the top clips (trimmed mp4 files) and write viral_clips.csv
-    viral_csv = os.path.join(script_dir, 'viral_clips.csv')
-    seg.process_file(srt_path, output_path=os.path.join(script_dir,'segments.csv'), clips_path=viral_csv, top_k=top_k, export_clips=True, keep_all=keep_all)
+    srt_path = os.path.join(script_dir, filepath)
+    input_video = os.path.join(script_dir, input_video_name)
 
-    if not os.path.exists(viral_csv):
-        raise RuntimeError("viral_clips.csv was not created. Aborting.")
+    override = input("Type override code to use existing segments.csv (leave blank to regenerate): ")
+    if override != "y":
+        segmenter = VideoSegmenter()
+        segmenter.process_file(srt_path)
+    else:
+        print("⚠️: Using existing viral_clips.csv (no new segmentation will be performed).")
 
-    df = pd.read_csv(viral_csv)
+    df = pd.read_csv(os.path.join(script_dir, 'viral_clips.csv'))
 
-    base = os.path.splitext(os.path.basename(input_video_path))[0]
-    # iterate top clips: filenames follow the pattern <base>_topclip_##.mp4 in ascending order
-    num_clips = len(df)
-    for idx in range(1, num_clips + 1):
-        clip_filename = f"{base}_topclip_{idx:02d}.mp4"
-        clip_path = os.path.join(script_dir, clip_filename)
-        if not os.path.exists(clip_path):
-            print(f"⚠️ Expected clip not found: {clip_path} (skipping)")
-            continue
+    df['Start'] = df['Start'].apply(lambda s: s if ':' in s else f"0:{s}")
+    df['End'] = df['End'].apply(lambda s: s if ':' in s else f"0:{s}")
+    df['Start_seconds'] = pd.to_timedelta(df['Start']).dt.total_seconds().astype(int)
+    df['End_seconds'] = pd.to_timedelta(df['End']).dt.total_seconds().astype(int)
 
-        # extract start/end from df row (df rows are ordered by score in viral_clips.csv)
-        row = df.iloc[idx-1]
-        start_s = parse_time_like(row.get('Start', 0))
-        end_s = parse_time_like(row.get('End', 0))
+    for idx, row in df.iterrows():
+        start = row['Start_seconds']
+        end = row['End_seconds']
 
-        print(f"\n--- Processing top clip {idx}/{num_clips}: {clip_filename} | {start_s:.1f}s → {end_s:.1f}s ---")
-
-        temp_dir = os.path.join(script_dir, 'temp')
+        print(f"\n--- Processing Segment {idx} | {start}s to {end}s ---")
+        temp_dir = os.path.join(script_dir, "temp")
         os.makedirs(temp_dir, exist_ok=True)
 
-        subtitle_path = os.path.join(temp_dir, f"clip_{idx:02d}.srt")
-        # extract and shift SRT for this clip
-        extract_srt(srt_path, subtitle_path, start_seconds=start_s, end_seconds=end_s)
+        base_path = os.path.join(temp_dir, f"{input_video_name}_topclip_{idx:02d}.mp4")
+        trimmed_output = base_path + '.mp4'
+        reformatted_output = base_path + '_reformatted.mp4'
+        combined_output = base_path + '_with_audio.mp4'
+        subtitle_path = base_path + '.srt'
+        final_output = base_path + '_final.mp4'
 
-        # run face-crop pipeline on the trimmed clip and produce a cropped file
-        cropped_output = os.path.join(temp_dir, f"{base}_topclip_{idx:02d}_cropped.mp4")
-        try:
-            # Call the user's heavy-lifting function - here we assume it's implemented in this file
-            # If you kept the original function body in this file, it will run. Otherwise, replace
-            # the stub above with the real implementation.
-            process_video_and_audio(clip_path, face_csv_path=os.path.join(temp_dir, f"face_clip_{idx:02d}.csv"), output_path=cropped_output)
-        except NotImplementedError as e:
-            print("Please paste your original 'process_video_and_audio' implementation into this file.\n", e)
-            return
+        # Now using your cut_video() here
+        if not cut_video(input_video, trimmed_output, start, end):
+            continue  # skip if trim fails
 
-        # burn subtitles onto the cropped output
-        final_output = os.path.join(script_dir, f"{base}_topclip_{idx:02d}_final.mp4")
-        add_subtitles(cropped_output, subtitle_path, final_output)
+        process_video_and_audio(trimmed_output, face_csv_path='face_position.csv', output_path=combined_output)
+        extract_srt(srt_path, subtitle_path, start, end)
+        add_subtitles(combined_output, subtitle_path, final_output)
 
-        # clean up temporary files for this clip
-        for f in [clip_path, cropped_output, subtitle_path]:
-            try:
-                if os.path.exists(f):
-                    os.remove(f)
-            except Exception:
-                pass
+        for f in [trimmed_output, reformatted_output, combined_output, subtitle_path]:
+            if os.path.exists(f):
+                os.remove(f)
 
+    print("\n✅ All segments processed successfully.")
     print("\n✅ All top clips processed.")
 
 
 if __name__ == '__main__':
     
-    srt = input("Enter srt path: ")
-    video = input("Enter video path: ")
     start = time.time()
-    process_all_top_clips(srt, video, top_k=5, keep_all= True)
+    process_all_segments()
     print(f"Total time: {time.time() - start:.1f}s")
