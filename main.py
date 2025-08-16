@@ -273,7 +273,8 @@ def extract_srt(input_srt_path, output_srt_path, start_seconds, end_seconds):
     end = seconds_to_srt_time(end_seconds)
 
     selected_subs = pysrt.SubRipFile(
-        [sub for sub in subs if sub.start >= start and sub.end <= end]
+        [sub for sub in subs if sub.end >= start and sub.start <= end]
+
     )
 
     if selected_subs:
