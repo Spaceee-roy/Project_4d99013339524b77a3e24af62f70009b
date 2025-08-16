@@ -7,7 +7,7 @@ from datetime import timedelta
 from tqdm import tqdm
 import pandas as pd
 import pysrt
-
+from pathlib import Path
 # try to import the VideoSegmenter from the viral_segmenter module
 try:
     from executioner import VideoSegmenter
@@ -259,16 +259,6 @@ def process_video_and_audio(video_path, face_csv_path, output_path):
 
 
 def seconds_to_srt_time(seconds):
-    """Convert seconds (float/int) to pysrt.SubRipTime."""
-    td = timedelta(seconds=seconds)
-    # Extract hours, minutes, seconds, milliseconds
-    hours, remainder = divmod(td.seconds, 3600)
-    minutes, secs = divmod(remainder, 60)
-    milliseconds = int(td.microseconds / 1000)
-    return pysrt.SubRipTime(hours=hours, minutes=minutes, seconds=secs, milliseconds=milliseconds)
-
-
-def seconds_to_srt_time(seconds):
     td = timedelta(seconds=seconds)
     hours = td.seconds // 3600
     minutes = (td.seconds % 3600) // 60
@@ -299,36 +289,62 @@ def extract_srt(input_srt_path, output_srt_path, start_seconds, end_seconds):
     print(f"✅ Extracted subtitles saved to {output_srt_path}")
 
 
+from pathlib import Path
+import subprocess
+import sys
+
 def add_subtitles(video_path, subtitle_path, output_path):
     try:
-        output_file = os.path.abspath(output_path)
-        safe_subtitle_file = subtitle_path.replace("\\", "/")
+        # Ensure absolute paths and use forward slashes for ffmpeg
+        video_path = Path(video_path).resolve().as_posix()
+        subtitle_path = Path(subtitle_path).resolve().as_posix()
+        output_path = Path(output_path).resolve().as_posix()
+
+        # Escape colons in Windows drive letters for ffmpeg filter
+        # (ffmpeg requires '\:' inside the subtitles= filter for Windows drive letters)
+        if sys.platform.startswith("win"):
+            if ':' in subtitle_path[:3]:
+                subtitle_path = subtitle_path.replace(':', '\\:')
+
+        # Build ffmpeg command without URL encoding
         command = [
             'ffmpeg', '-y',
             '-i', video_path,
-            '-vf', f"subtitles={safe_subtitle_file}:force_style='FontName=Roboto,Alignment=2,MarginV=75,MarginL=75,MarginR=75,FontSize=14,BorderStyle=3, Outline=0,Shadow=0,BackColour=&H00620AFA&,Bold=1,PrimaryColour=&HFFFFFF&'",
+            '-vf',
+            f"subtitles='{subtitle_path}':force_style='FontName=Roboto,Alignment=2,MarginV=75,MarginL=75,MarginR=75,FontSize=14,BorderStyle=3, Outline=2,Shadow=0,BackColour=&H00620AFA&,Bold=1,PrimaryColour=&HFFFFFF&'",
             '-c:a', 'copy',
-            output_file
+            output_path
         ]
+
+        # Run the command
         subprocess.run(command, check=True)
+        print(f"✅ Subtitles added to {output_path}")
+
     except subprocess.CalledProcessError as e:
-        print(f"Error adding subtitles: {str(e)}")
+        print(f"Error adding subtitles: {e.stderr if hasattr(e, 'stderr') else str(e)}")
     except Exception as e:
         print(f"Unexpected error: {str(e)}")
+
+
 
 
 # -----------------------------
 # Orchestration: create top clips with Viral Segmenter then run your face/crop/subtitle pipeline
 # -----------------------------
 
+from pathlib import Path
+
+def force_windows_path(p):
+    return Path(p).resolve().as_posix()  # Always C:/... format for ffmpeg
+
 def process_all_segments():
-    script_dir = os.path.dirname(os.path.abspath(__file__))
+    script_dir = Path(__file__).resolve().parent
 
     filepath = input("Enter SRT file name (e.g., subtitles.srt): ").strip()
     input_video_name = input("Enter video file name (e.g., video.mp4): ").strip()
 
-    srt_path = os.path.join(script_dir, filepath)
-    input_video = os.path.join(script_dir, input_video_name)
+    srt_path = force_windows_path(script_dir / filepath)
+    input_video = force_windows_path(script_dir / input_video_name)
 
     override = input("Type override code to use existing segments.csv (leave blank to regenerate): ")
     if override != "y":
@@ -337,7 +353,7 @@ def process_all_segments():
     else:
         print("⚠️: Using existing viral_clips.csv (no new segmentation will be performed).")
 
-    df = pd.read_csv(os.path.join(script_dir, 'viral_clips.csv'))
+    df = pd.read_csv(script_dir / 'viral_clips.csv')
 
     df['Start'] = df['Start'].apply(lambda s: s if ':' in s else f"0:{s}")
     df['End'] = df['End'].apply(lambda s: s if ':' in s else f"0:{s}")
@@ -345,35 +361,38 @@ def process_all_segments():
     df['End_seconds'] = pd.to_timedelta(df['End']).dt.total_seconds().astype(int)
     goodname = input_video_name.replace(".mp4", "")
 
+    temp_dir = script_dir / "temp"
+    temp_dir.mkdir(exist_ok=True)
+
     for idx, row in df.iterrows():
         start = row['Start_seconds']
         end = row['End_seconds']
 
         print(f"\n--- Processing Segment {idx} | {start}s to {end}s ---")
-        temp_dir = os.path.join(script_dir, "temp")
-        os.makedirs(temp_dir, exist_ok=True)
 
-        base_path = os.path.join(temp_dir, f"{goodname.strip()}_topclip_{idx:02d}.mp4")
-        trimmed_output = base_path + '.mp4'
-        reformatted_output = base_path + '_reformatted.mp4'
-        combined_output = base_path + '_with_audio.mp4'
-        subtitle_path = base_path + '.srt'
-        final_output = base_path + '_final.mp4'
+        base_path = temp_dir / f"{goodname.strip()}_topclip_{idx:02d}"
 
-        # Now using your cut_video() here
+        trimmed_output = force_windows_path(base_path.with_suffix('.mp4'))
+        reformatted_output = force_windows_path(base_path.with_name(base_path.name + '_reformatted.mp4'))
+        combined_output = force_windows_path(base_path.with_name(base_path.name + '_with_audio.mp4'))
+        subtitle_path = force_windows_path(base_path.with_suffix('.srt'))
+        final_output = force_windows_path(base_path.with_name(base_path.name + '_final.mp4'))
+        print(trimmed_output, reformatted_output, combined_output, subtitle_path, final_output)
         if not cut_video(input_video, trimmed_output, start, end):
-            continue  # skip if trim fails
+            continue
 
         process_video_and_audio(trimmed_output, face_csv_path='face_position.csv', output_path=combined_output)
         extract_srt(srt_path, subtitle_path, start, end)
         add_subtitles(combined_output, subtitle_path, final_output)
 
-        for f in [trimmed_output, reformatted_output, combined_output, subtitle_path]:
-            if os.path.exists(f):
-                os.remove(f)
+        for f in [trimmed_output, reformatted_output, combined_output]:
+            try:
+                Path(f).unlink(missing_ok=True)
+            except Exception as e:
+                print(e)
+                break
 
     print("\n✅ All segments processed successfully.")
-    print("\n✅ All top clips processed.")
 
 
 if __name__ == '__main__':
