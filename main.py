@@ -8,12 +8,14 @@ from tqdm import tqdm
 import pandas as pd
 import pysrt
 from pathlib import Path
+import assemblyai as aai
 # try to import the VideoSegmenter from the viral_segmenter module
 try:
     from executioner import VideoSegmenter
 except Exception:
     VideoSegmenter = None
     
+aai.settings.api_key = ''
 
 # import existing helpers (face_recognition, cv2 etc.)
 try:
@@ -267,28 +269,15 @@ def seconds_to_srt_time(seconds):
     return pysrt.SubRipTime(hours=hours, minutes=minutes, seconds=secs, milliseconds=milliseconds)
 
 
-def extract_srt(input_srt_path, output_srt_path, start_seconds, end_seconds):
-    subs = pysrt.open(input_srt_path, encoding='utf-8')
-    start = seconds_to_srt_time(start_seconds)
-    end = seconds_to_srt_time(end_seconds)
+def generate_subtitles(video_path, subtitle_path):
+    # print("🎧 Transcribing audio...")
+    transcriber = aai.Transcriber(config=aai.TranscriptionConfig(speech_model=aai.SpeechModel.best))
+    transcript = transcriber.transcribe(video_path)
+    subtitles = transcript.export_subtitles_srt()
 
-    selected_subs = pysrt.SubRipFile(
-        [sub for sub in subs if sub.end >= start and sub.start <= end]
-
-    )
-
-    if selected_subs:
-        first_start_seconds = (
-            selected_subs[0].start.hours * 3600 +
-            selected_subs[0].start.minutes * 60 +
-            selected_subs[0].start.seconds +
-            selected_subs[0].start.milliseconds / 1000.0
-        )
-        selected_subs.shift(seconds=-first_start_seconds)
-
-    selected_subs.save(output_srt_path, encoding='utf-8')
-    print(f"✅ Extracted subtitles saved to {output_srt_path}")
-
+    with open(subtitle_path, 'w') as f:
+        f.write(subtitles)
+    # print("✅ Subtitle file created successfully!")
 
 from pathlib import Path
 import subprocess
@@ -383,10 +372,10 @@ def process_all_segments():
             continue
 
         process_video_and_audio(trimmed_output, face_csv_path='face_position.csv', output_path=combined_output)
-        extract_srt(srt_path, subtitle_path, start, end)
+        generate_subtitles(combined_output, subtitle_path)
         add_subtitles(combined_output, subtitle_path, final_output)
 
-        for f in [trimmed_output, reformatted_output, combined_output]:
+        for f in [trimmed_output, reformatted_output, combined_output, subtitle_path]:
             try:
                 Path(f).unlink(missing_ok=True)
             except Exception as e:
