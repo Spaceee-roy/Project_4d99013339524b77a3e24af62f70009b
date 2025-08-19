@@ -6,7 +6,7 @@ import subprocess
 from datetime import timedelta
 from tqdm import tqdm
 import pandas as pd
-import pysrt
+import sys
 from pathlib import Path
 import assemblyai as aai
 # try to import the VideoSegmenter from the viral_segmenter module
@@ -21,7 +21,6 @@ aai.settings.api_key = ''
 try:
     import face_recognition
     import cv2
-    import numpy as np
     from scipy.interpolate import CubicSpline
 except Exception:
     # If these imports fail it's okay; the script will notify at runtime
@@ -259,16 +258,6 @@ def process_video_and_audio(video_path, face_csv_path, output_path):
     subprocess.run(cmd, check=True)
     print(f"Done — output saved to {output_path}")
 
-
-def seconds_to_srt_time(seconds):
-    td = timedelta(seconds=seconds)
-    hours = td.seconds // 3600
-    minutes = (td.seconds % 3600) // 60
-    secs = td.seconds % 60
-    milliseconds = int(td.microseconds / 1000)
-    return pysrt.SubRipTime(hours=hours, minutes=minutes, seconds=secs, milliseconds=milliseconds)
-
-
 def generate_subtitles(video_path, subtitle_path):
     # print("🎧 Transcribing audio...")
     transcriber = aai.Transcriber(config=aai.TranscriptionConfig(speech_model=aai.SpeechModel.best))
@@ -278,10 +267,6 @@ def generate_subtitles(video_path, subtitle_path):
     with open(subtitle_path, 'w') as f:
         f.write(subtitles)
     # print("✅ Subtitle file created successfully!")
-
-from pathlib import Path
-import subprocess
-import sys
 
 def add_subtitles(video_path, subtitle_path, output_path):
     try:
