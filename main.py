@@ -1,26 +1,18 @@
-import os
-import time
-import csv
-import json
-import subprocess
+import os, time,csv,json, subprocess, pandas as pd, sys, assemblyai as aai
 from datetime import timedelta
-from tqdm import tqdm
-import pandas as pd
-import sys
+from tqdm import tqdm 
 from pathlib import Path
-import assemblyai as aai
 # try to import the VideoSegmenter from the viral_segmenter module
 try:
     from executioner import VideoSegmenter
 except Exception:
     VideoSegmenter = None
     
-aai.settings.api_key = ''
+aai.settings.api_key = '4d99013339524b77a3e24af62f70009b'
 
 # import existing helpers (face_recognition, cv2 etc.)
 try:
-    import face_recognition
-    import cv2
+    import face_recognition, cv2
     from scipy.interpolate import CubicSpline
 except Exception:
     # If these imports fail it's okay; the script will notify at runtime
@@ -30,13 +22,6 @@ except Exception:
 # Utility helpers
 # -----------------------------
 
-def print_progress_bar(iteration, total, prefix='', suffix='', length=40):
-    percent = f"{100 * (iteration / float(total)):.1f}"
-    filled_length = int(length * iteration // total)
-    bar = '█' * filled_length + '•' * (length - filled_length)
-    print(f'\r{prefix} |{bar}| {percent}% {suffix}', end='')
-    if iteration == total:
-        print()
 
 
 def parse_time_like(t):
@@ -120,13 +105,6 @@ def process_video_and_audio(video_path, face_csv_path, output_path):
     face_csv_path = os.path.abspath(face_csv_path)
     output_path = os.path.abspath(output_path)
 
-    """
-    1. Locate and record face position in csv file
-    2. Retrieve and crop face into a 9:16 format.
-    """
-
-    
-
     print("📸 Phase 1: Detecting faces and generating timeline...")
 
     video_capture = cv2.VideoCapture(video_path)
@@ -142,23 +120,28 @@ def process_video_and_audio(video_path, face_csv_path, output_path):
     last_x = frame_width // 2  # default to center
 
     # Run detection once per second
-    for frame_idx in tqdm(range(0, total_frames, int(fps))):
+    for frame_idx in tqdm.tqdm(range(0, total_frames, int(fps))):
         video_capture.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
         ret, frame = video_capture.read()
-        if not ret: # if there is no frames stop trying
+        if not ret:
             break
 
         current_time = frame_idx / fps
-        face_locations = face_recognition.face_locations(frame)
+
+        # ✅ Fix 1: Convert BGR → RGB before detection
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        face_locations = face_recognition.face_locations(rgb_frame)
 
         if face_locations:
-            top, right, bottom, left = face_locations[0] # top and bottom needed to soak up value 0 and 2 outputed from face_locations(0)
-            face_center_x = (right + left) / 2 # gets the boundary and finds the center
-
-
+            # ✅ Fix 2: Pick the *largest* face by area
+            largest_face = max(
+                face_locations, key=lambda box: (box[2] - box[0]) * (box[1] - box[3])
+            )
+            top, right, bottom, left = largest_face
+            face_center_x = (right + left) / 2
             last_x = face_center_x
         else:
-            face_center_x = last_x # fail safe
+            face_center_x = last_x  # fail safe
 
         face_x_positions.append(face_center_x)
         timestamps.append(current_time)
@@ -183,7 +166,6 @@ def process_video_and_audio(video_path, face_csv_path, output_path):
     video_height = int(video_info["streams"][0]["height"])
     print(f"Source video: {video_width} x {video_height}")
 
-    # Desired crop: 9:16 portrait aspect ratio
     desired_width = (9 / 16) * video_height
     dw_int = int(round(desired_width))
     oh_int = video_height
@@ -204,7 +186,6 @@ def process_video_and_audio(video_path, face_csv_path, output_path):
     if len(times) < 2:
         raise SystemExit("Need at least two CSV points for interpolation.")
 
-    # Smooth with cubic spline
     cs = CubicSpline(times, face_centers, bc_type='natural')
 
     # Clamp function
@@ -216,23 +197,20 @@ def process_video_and_audio(video_path, face_csv_path, output_path):
             return float(video_width - desired_width)
         return left
 
-    # Build ffmpeg X-position expression
     seg_terms = []
     for i in range(len(times) - 1):
         t0 = times[i]
         t1 = times[i + 1]
 
-        cx0 = float(cs(t0))
-        cx1 = float(cs(t1))
+        # ✅ Fix 3: Clamp spline outputs to avoid overshoot
+        cx0 = clamp_left_from_center(float(cs(t0)))
+        cx1 = clamp_left_from_center(float(cs(t1)))
 
-        x0 = clamp_left_from_center(cx0)
-        x1 = clamp_left_from_center(cx1)
-
-        slope = 0.0 if abs(t1 - t0) < 1e-6 else (x1 - x0) / (t1 - t0)
+        slope = 0.0 if abs(t1 - t0) < 1e-6 else (cx1 - cx0) / (t1 - t0)
 
         term = (
             f"(between(t\\,{t0:.3f}\\,{t1:.3f})*("
-            f"{x0:.3f}+({slope:.6f})*(t-{t0:.3f})"
+            f"{cx0:.3f}+({slope:.6f})*(t-{t0:.3f})"
             f"))"
         )
         seg_terms.append(term)
@@ -242,11 +220,9 @@ def process_video_and_audio(video_path, face_csv_path, output_path):
 
     expr = "(" + "+".join(seg_terms) + "+" + tail + ")"
 
-    # Final crop filter
     crop_filter = f"crop={dw_int}:{oh_int}:{expr}:0"
     print("Crop filter length:", len(crop_filter))
 
-    # Run ffmpeg
     cmd = [
         "ffmpeg", "-y",
         "-i", video_path,
