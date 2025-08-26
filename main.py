@@ -1,63 +1,4 @@
-import os, time,csv,json, subprocess, pandas as pd, sys, assemblyai as aai
-from datetime import timedelta
-from tqdm import tqdm 
-from pathlib import Path
-# try to import the VideoSegmenter from the viral_segmenter module
-try:
-    from executioner import VideoSegmenter
-except Exception:
-    VideoSegmenter = None
-    
-aai.settings.api_key = '4d99013339524b77a3e24af62f70009b'
-
-# import existing helpers (face_recognition, cv2 etc.)
-try:
-    import face_recognition, cv2
-    from scipy.interpolate import CubicSpline
-except Exception:
-    # If these imports fail it's okay; the script will notify at runtime
-    pass
-
-# -----------------------------
-# Utility helpers
-# -----------------------------
-
-
-
-def parse_time_like(t):
-    """Parse a variety of time-like inputs to seconds (float).
-    Accepts: floats/ints (seconds), 'MM:SS', 'HH:MM:SS', pandas Timedelta strings, or 'H:MM:SS.sss'."""
-    if pd.isna(t):
-        return 0.0
-    if isinstance(t, (int, float)):
-        return float(t)
-    if isinstance(t, timedelta):
-        return t.total_seconds()
-    s = str(t).strip()
-    # if looks like a number
-    try:
-        return float(s)
-    except Exception:
-        pass
-    # try pandas to_timedelta
-    try:
-        td = pd.to_timedelta(s)
-        return td.total_seconds()
-    except Exception:
-        pass
-    # fallback: split by :
-    parts = s.split(':')
-    try:
-        parts = [float(p) for p in parts]
-    except Exception:
-        return 0.0
-    if len(parts) == 1:
-        return parts[0]
-    if len(parts) == 2:
-        return parts[0]*60 + parts[1]
-    if len(parts) == 3:
-        return parts[0]*3600 + parts[1]*60 + parts[2]
-    return 0.0
+import os, time, subprocess, numpy as np, pandas as pd, sys, assemblyai as aai; from tqdm import tqdm; from executioner import VideoSegmenter; from pathlib import Path; import face_recognition, cv2; from scipy.interpolate import CubicSpline, interp1d;aai.settings.api_key = ''; from moviepy import VideoFileClip
 
 def cut_video(input_path, output_path, start_time, end_time):
     import shutil
@@ -95,19 +36,17 @@ def cut_video(input_path, output_path, start_time, end_time):
 
     print(f"[cut_video] ✅ Trimmed video saved: {output_path}")
     return True
-# -----------------------------
-# Existing processing functions (adapted from your main.py)
-# - cut_video is no longer used for top clips because viral_segmenter will export trimmed clips
-# -----------------------------
 
-def process_video_and_audio(video_path, face_csv_path, output_path):
-    video_path = os.path.abspath(video_path)
-    face_csv_path = os.path.abspath(face_csv_path)
-    output_path = os.path.abspath(output_path)
-
+def crop_video_with_padding(video_path: str, csv_path: str, output_path: str):
+    """
+    Crops a video to a 9:16 aspect ratio based on horizontal face coordinates (x) 
+    from a CSV file. Face positions are interpolated per-frame to remove jitter.
+    """
+   
     print("📸 Phase 1: Detecting faces and generating timeline...")
 
     video_capture = cv2.VideoCapture(video_path)
+
     if not video_capture.isOpened():
         raise Exception("Could not open video file")
 
@@ -115,125 +54,125 @@ def process_video_and_audio(video_path, face_csv_path, output_path):
     frame_width = int(video_capture.get(cv2.CAP_PROP_FRAME_WIDTH))
     frame_height = int(video_capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
     total_frames = int(video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
-
     face_x_positions, timestamps = [], []
     last_x = frame_width // 2  # default to center
 
-    # Run detection once per second
-    for frame_idx in tqdm.tqdm(range(0, total_frames, int(fps))):
+    for frame_idx in tqdm(range(0, total_frames, int(fps))):
         video_capture.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
         ret, frame = video_capture.read()
         if not ret:
             break
 
         current_time = frame_idx / fps
-
-        # ✅ Fix 1: Convert BGR → RGB before detection
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        face_locations = face_recognition.face_locations(rgb_frame)
+        face_locations = face_recognition.face_locations(frame)
 
         if face_locations:
-            # ✅ Fix 2: Pick the *largest* face by area
-            largest_face = max(
-                face_locations, key=lambda box: (box[2] - box[0]) * (box[1] - box[3])
-            )
-            top, right, bottom, left = largest_face
+            top, right, bottom, left = face_locations[0]
             face_center_x = (right + left) / 2
             last_x = face_center_x
         else:
-            face_center_x = last_x  # fail safe
+            face_center_x = last_x  # fallback
 
         face_x_positions.append(face_center_x)
         timestamps.append(current_time)
 
     video_capture.release()
 
-    df = pd.DataFrame({'Timestamp': timestamps, 'Face_X_Position': face_x_positions}).bfill()
-    df.to_csv(face_csv_path, index=False)
+    df = pd.DataFrame({"Timestamp": timestamps, "Face_X_Position": face_x_positions}).bfill()
+    df.to_csv(csv_path, index=False)
 
-    print("✂️ Phase 2: Cropping and saving frames...")
+    # --- 1. Load Video and CSV Data ---
+    print("Loading video and CSV data...")
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        print("Error: Could not open video file.")
+        return
 
-    # Get video dimensions
-    probe_cmd = [
-        "ffprobe", "-v", "error",
-        "-select_streams", "v:0",
-        "-show_entries", "stream=width,height",
-        "-of", "json", video_path
-    ]
-    proc = subprocess.run(probe_cmd, capture_output=True, text=True, check=True)
-    video_info = json.loads(proc.stdout)
-    video_width = int(video_info["streams"][0]["width"])
-    video_height = int(video_info["streams"][0]["height"])
-    print(f"Source video: {video_width} x {video_height}")
+    original_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    original_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    desired_width = (9 / 16) * video_height
-    dw_int = int(round(desired_width))
-    oh_int = video_height
-    half_w = desired_width / 2.0
+    try:
+        df = pd.read_csv(csv_path)
+    except FileNotFoundError:
+        print(f"Error: CSV file not found at {csv_path}")
+        return
+    except KeyError:
+        print("Error: Your CSV file must contain 'Timestamp' and 'Face_X_Position' columns.")
+        return
 
-    # Load CSV data
-    times = []
-    face_centers = []
-    with open(face_csv_path, newline="") as f:
-        rdr = csv.DictReader(f)
-        for r in rdr:
-            t = float(r["Timestamp"])
-            cx = float(r["Face_X_Position"])
-            times.append(t)
-            adjustcx = cx - half_w
-            face_centers.append(adjustcx)
+    # --- Interpolate face positions per frame ---
+    frame_times = np.arange(frame_count) / fps
+    interp_series = (
+        df.set_index("Timestamp")["Face_X_Position"]
+          .reindex(frame_times, method=None)
+          .interpolate(method="linear")
+          .bfill().ffill()
+    )
+    coords = interp_series.to_dict()
 
-    if len(times) < 2:
-        raise SystemExit("Need at least two CSV points for interpolation.")
+    # --- 2. Calculate 9:16 Crop Dimensions ---
+    crop_h = original_height
+    crop_w = int(crop_h * 9 / 16)
 
-    cs = CubicSpline(times, face_centers, bc_type='natural')
+    if crop_w > original_width:
+        print("Error: Video is not wide enough for a 9:16 crop at full height.")
+        cap.release()
+        return
 
-    # Clamp function
-    def clamp_left_from_center(center_x):
-        left = center_x - half_w
-        if left < 0:
-            return 0.0
-        elif left + desired_width > video_width:
-            return float(video_width - desired_width)
-        return left
+    # --- 3. Setup Video Writer ---
+    temp_output_path = "temp_video_no_audio.mp4"
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter(temp_output_path, fourcc, fps, (crop_w, crop_h))
 
-    seg_terms = []
-    for i in range(len(times) - 1):
-        t0 = times[i]
-        t1 = times[i + 1]
+    # --- 4. Process Each Frame ---
+    print("Processing frames...")
+    for frame_num in range(frame_count):
+        ret, frame = cap.read()
+        if not ret:
+            break
 
-        # ✅ Fix 3: Clamp spline outputs to avoid overshoot
-        cx0 = clamp_left_from_center(float(cs(t0)))
-        cx1 = clamp_left_from_center(float(cs(t1)))
+        face_center_x = coords.get(frame_num / fps, original_width // 2)
 
-        slope = 0.0 if abs(t1 - t0) < 1e-6 else (cx1 - cx0) / (t1 - t0)
+        # Calculate crop boundaries
+        x1 = int(face_center_x - crop_w / 2)
+        x2 = int(face_center_x + crop_w / 2)
 
-        term = (
-            f"(between(t\\,{t0:.3f}\\,{t1:.3f})*("
-            f"{cx0:.3f}+({slope:.6f})*(t-{t0:.3f})"
-            f"))"
-        )
-        seg_terms.append(term)
+        # Clamp edges
+        if x1 < 0:
+            x1 = 0
+            x2 = crop_w
+        elif x2 > original_width:
+            x2 = original_width
+            x1 = original_width - crop_w
 
-    last_center = clamp_left_from_center(face_centers[-1])
-    tail = f"({last_center:.3f})"
+        cropped_frame = frame[:, x1:x2]
+        out.write(cropped_frame)
 
-    expr = "(" + "+".join(seg_terms) + "+" + tail + ")"
+        if (frame_num + 1) % 100 == 0:
+            print(f"  Processed {frame_num + 1} / {frame_count} frames")
 
-    crop_filter = f"crop={dw_int}:{oh_int}:{expr}:0"
-    print("Crop filter length:", len(crop_filter))
+    # --- 5. Release Video Resources ---
+    print("Releasing video resources...")
+    cap.release()
+    out.release()
 
-    cmd = [
-        "ffmpeg", "-y",
-        "-i", video_path,
-        "-vf", crop_filter,
-        "-c:a", "copy",
-        output_path
-    ]
-    print("Running ffmpeg...")
-    subprocess.run(cmd, check=True)
-    print(f"Done — output saved to {output_path}")
+    # --- 6. Add audio from original video ---
+    print("Adding audio back using MoviePy...")
+    try:
+        original_clip = VideoFileClip(video_path)
+        processed_clip = VideoFileClip(temp_output_path)
+        final_clip = processed_clip.with_audio(original_clip.audio)
+        time.sleep(3)
+        final_clip.write_videofile(output_path, codec="libx264", audio_codec="aac")
 
+        os.remove(temp_output_path)
+        print(f"✅ Success! Final video saved to: {output_path}")
+
+    except Exception as e:
+        print("⚠️ Audio merge failed:", e)
+    
 def generate_subtitles(video_path, subtitle_path):
     # print("🎧 Transcribing audio...")
     transcriber = aai.Transcriber(config=aai.TranscriptionConfig(speech_model=aai.SpeechModel.best))
@@ -276,24 +215,15 @@ def add_subtitles(video_path, subtitle_path, output_path):
     except Exception as e:
         print(f"Unexpected error: {str(e)}")
 
-
-
-
-# -----------------------------
-# Orchestration: create top clips with Viral Segmenter then run your face/crop/subtitle pipeline
-# -----------------------------
-
-from pathlib import Path
-
 def force_windows_path(p):
     return Path(p).resolve().as_posix()  # Always C:/... format for ffmpeg
 
 def process_all_segments():
-    script_dir = Path(__file__).resolve().parent
+   
 
     filepath = input("Enter SRT file name (e.g., subtitles.srt): ").strip()
     input_video_name = input("Enter video file name (e.g., video.mp4): ").strip()
-
+    script_dir = Path(__file__).resolve().parent
     srt_path = force_windows_path(script_dir / filepath)
     input_video = force_windows_path(script_dir / input_video_name)
 
@@ -318,25 +248,21 @@ def process_all_segments():
     for idx, row in df.iterrows():
         start = row['Start_seconds']
         end = row['End_seconds']
+        trueidx = idx + 1
+        print(f"\n--- Processing Segment {trueidx} | {start}s to {end}s ---")
 
-        print(f"\n--- Processing Segment {idx} | {start}s to {end}s ---")
+        base_path = temp_dir / f"{goodname.strip()}_topclip_{trueidx:02d}"
 
-        base_path = temp_dir / f"{goodname.strip()}_topclip_{idx:02d}"
-
-        trimmed_output = force_windows_path(base_path.with_suffix('.mp4'))
-        reformatted_output = force_windows_path(base_path.with_name(base_path.name + '_reformatted.mp4'))
+        trimmed_output = force_windows_path(base_path.with_suffix('.mp4')) 
         combined_output = force_windows_path(base_path.with_name(base_path.name + '_with_audio.mp4'))
         subtitle_path = force_windows_path(base_path.with_suffix('.srt'))
         final_output = force_windows_path(base_path.with_name(base_path.name + '_final.mp4'))
-        print(trimmed_output, reformatted_output, combined_output, subtitle_path, final_output)
-        if not cut_video(input_video, trimmed_output, start, end):
-            continue
-
-        process_video_and_audio(trimmed_output, face_csv_path='face_position.csv', output_path=combined_output)
+        cut_video(input_video, trimmed_output, start, end)
+        crop_video_with_padding(trimmed_output,'face_position.csv',combined_output)
         generate_subtitles(combined_output, subtitle_path)
         add_subtitles(combined_output, subtitle_path, final_output)
 
-        for f in [trimmed_output, reformatted_output, combined_output, subtitle_path]:
+        for f in [trimmed_output, combined_output, subtitle_path]:
             try:
                 Path(f).unlink(missing_ok=True)
             except Exception as e:
