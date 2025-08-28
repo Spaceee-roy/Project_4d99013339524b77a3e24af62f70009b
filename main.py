@@ -1,4 +1,4 @@
-import os, time, subprocess, numpy as np, pandas as pd, sys, assemblyai as aai; from tqdm import tqdm; from executioner import VideoSegmenter; from pathlib import Path; import face_recognition, cv2; from scipy.interpolate import CubicSpline, interp1d;aai.settings.api_key = ''; from moviepy import VideoFileClip
+import os, time, subprocess, numpy as np, pandas as pd, sys, assemblyai as aai; from tqdm import tqdm; from executioner import VideoSegmenter; from pathlib import Path; import face_recognition, cv2; from scipy.interpolate import CubicSpline, interp1d;aai.settings.api_key = '4d99013339524b77a3e24af62f70009b'; from moviepy import VideoFileClip
 
 def cut_video(input_path, output_path, start_time, end_time):
     import shutil
@@ -46,7 +46,6 @@ def crop_video_with_padding(video_path: str, csv_path: str, output_path: str):
     print("📸 Phase 1: Detecting faces and generating timeline...")
 
     video_capture = cv2.VideoCapture(video_path)
-
     if not video_capture.isOpened():
         raise Exception("Could not open video file")
 
@@ -57,6 +56,7 @@ def crop_video_with_padding(video_path: str, csv_path: str, output_path: str):
     face_x_positions, timestamps = [], []
     last_x = frame_width // 2  # default to center
 
+    # Sample frames once per second to estimate face positions
     for frame_idx in tqdm(range(0, total_frames, int(fps))):
         video_capture.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
         ret, frame = video_capture.read()
@@ -71,14 +71,14 @@ def crop_video_with_padding(video_path: str, csv_path: str, output_path: str):
             face_center_x = (right + left) / 2
             last_x = face_center_x
         else:
-            face_center_x = last_x  # fallback
+            face_center_x = last_x  # fallback to last known position
 
         face_x_positions.append(face_center_x)
         timestamps.append(current_time)
 
     video_capture.release()
 
-    df = pd.DataFrame({"Timestamp": timestamps, "Face_X_Position": face_x_positions}).bfill()
+    df = pd.DataFrame({"Time": timestamps, "X": face_x_positions}).bfill()
     df.to_csv(csv_path, index=False)
 
     # --- 1. Load Video and CSV Data ---
@@ -105,7 +105,7 @@ def crop_video_with_padding(video_path: str, csv_path: str, output_path: str):
     # --- Interpolate face positions per frame ---
     frame_times = np.arange(frame_count) / fps
     interp_series = (
-        df.set_index("Timestamp")["Face_X_Position"]
+        df.set_index("Time")["X"]
           .reindex(frame_times, method=None)
           .interpolate(method="linear")
           .bfill().ffill()
@@ -128,30 +128,60 @@ def crop_video_with_padding(video_path: str, csv_path: str, output_path: str):
 
     # --- 4. Process Each Frame ---
     print("Processing frames...")
-    for frame_num in range(frame_count):
+    for frame_num in tqdm(range(frame_count)):
         ret, frame = cap.read()
         if not ret:
             break
 
-        face_center_x = coords.get(frame_num / fps, original_width // 2)
+        try:
+            # Get interpolated face position for this frame
+            face_center_x = coords.get(frame_num / fps, original_width // 2)
 
-        # Calculate crop boundaries
-        x1 = int(face_center_x - crop_w / 2)
-        x2 = int(face_center_x + crop_w / 2)
+            # Ensure face_center_x stays within valid crop bounds
+            min_x = crop_w // 2
+            max_x = original_width - (crop_w // 2)
+            face_center_x = max(min_x, min(face_center_x, max_x))
 
-        # Clamp edges
-        if x1 < 0:
-            x1 = 0
-            x2 = crop_w
-        elif x2 > original_width:
-            x2 = original_width
-            x1 = original_width - crop_w
+            # Calculate crop boundaries
+            x1 = max(0, int(face_center_x - crop_w / 2))
+            x2 = min(original_width, int(face_center_x + crop_w / 2))
 
-        cropped_frame = frame[:, x1:x2]
-        out.write(cropped_frame)
+            # Double check crop width
+            if x2 - x1 != crop_w:
+                # Adjust x2 if needed
+                x2 = x1 + crop_w
+                # If x2 is now too large, adjust x1 instead
+                if x2 > original_width:
+                    x2 = original_width
+                    x1 = x2 - crop_w
 
-        if (frame_num + 1) % 100 == 0:
-            print(f"  Processed {frame_num + 1} / {frame_count} frames")
+            # Crop frame
+            if x1 >= 0 and x2 <= original_width:
+                cropped_frame = frame[:, x1:x2]
+                
+                # Verify dimensions before writing
+                if cropped_frame.shape[1] == crop_w and cropped_frame.shape[0] == crop_h:
+                    out.write(cropped_frame)
+                else:
+                    # Resize if dimensions don't match
+                    cropped_frame = cv2.resize(cropped_frame, (crop_w, crop_h))
+                    out.write(cropped_frame)
+            else:
+                # Fallback to center crop if coordinates are invalid
+                center_x = original_width // 2
+                x1 = center_x - (crop_w // 2)
+                x2 = x1 + crop_w
+                cropped_frame = frame[:, x1:x2]
+                out.write(cropped_frame)
+
+        except Exception as e:
+            print(f"Error processing frame {frame_num}: {e}")
+            # Fallback to center crop
+            center_x = original_width // 2
+            x1 = center_x - (crop_w // 2)
+            x2 = x1 + crop_w
+            cropped_frame = frame[:, x1:x2]
+            out.write(cropped_frame)
 
     # --- 5. Release Video Resources ---
     print("Releasing video resources...")
@@ -172,6 +202,7 @@ def crop_video_with_padding(video_path: str, csv_path: str, output_path: str):
 
     except Exception as e:
         print("⚠️ Audio merge failed:", e)
+
     
 def generate_subtitles(video_path, subtitle_path):
     # print("🎧 Transcribing audio...")
@@ -273,7 +304,9 @@ def process_all_segments():
 
 
 if __name__ == '__main__':
-    
     start = time.time()
     process_all_segments()
-    print(f"Total time: {time.time() - start:.1f}s")
+    elapsed = int(time.time() - start)
+    hours, remainder = divmod(elapsed, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    print(f"Total time: {hours} hours, {minutes} minutes, {seconds} seconds")
