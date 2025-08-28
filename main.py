@@ -258,7 +258,7 @@ def process_all_segments():
     srt_path = force_windows_path(script_dir / filepath)
     input_video = force_windows_path(script_dir / input_video_name)
 
-    override = input("Type override code to use existing segments.csv (leave blank to regenerate): ")
+    override = input("Type override code to use existing viral_clips.csv (leave blank to regenerate): ")
     if override != "y":
         segmenter = VideoSegmenter()
         segmenter.process_file(srt_path)
