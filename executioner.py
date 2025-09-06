@@ -124,19 +124,36 @@ class VideoSegmenter:
     def _detect_boundaries(self, sentence_entries: List[Dict]) -> List[int]:
         sentences = [e['text'] for e in sentence_entries]
         similarities = self._compute_similarity(sentences)
-        if similarities.size == 0: return [0, len(sentences)]
+        if similarities.size == 0:
+            return [0, len(sentences)]
 
         sim_mean, sim_std = float(np.mean(similarities)), float(np.std(similarities))
         abs_threshold = sim_mean - self.cfg.DYNAMIC_STD_FACTOR * sim_std
-
-        boundaries = {0, len(sentences)}
-        for i in range(1, len(similarities)):
-            drop = similarities[i-1] - similarities[i]
-            rel_drop = drop / max(similarities[i-1], 1e-6)
-            is_break = (similarities[i] < abs_threshold) or (rel_drop > self.cfg.RELATIVE_DROP)
-
+        boundaries = {0}
+        
+        # Iterate up to the last possible window
+        for i in range(len(similarities)):
+            # Check for a single, sharp drop in similarity
+            is_break = (similarities[i] < abs_threshold) or (similarities[i] / max(similarities[i-1], 1e-6) < (1 - self.cfg.RELATIVE_DROP))
+            
+            # Introduce a look-ahead to avoid premature cuts
             if is_break:
-                boundaries.add(i + 1)
+                # Calculate the average similarity of the *next* two sentences
+                # to see if the topic recovers.
+                next_window_size = 2
+                look_ahead_indices = range(i + 1, min(i + 1 + next_window_size, len(similarities)))
+                
+                # Check if there are enough sentences to look ahead
+                if look_ahead_indices:
+                    look_ahead_sim_avg = np.mean([similarities[j] for j in look_ahead_indices])
+                    # If the average similarity of the next sentences is still low, confirm the break
+                    if look_ahead_sim_avg < abs_threshold:
+                        boundaries.add(i + 1)
+                else:
+                    # If there's no more content, it must be a boundary
+                    boundaries.add(i + 1)
+
+        boundaries.add(len(sentences))
         return sorted(list(boundaries))
 
     def _score_segment(self, segment_text: str, duration: float, all_keywords: List[str], global_topics: List[str]) -> Tuple[float, Dict]:
