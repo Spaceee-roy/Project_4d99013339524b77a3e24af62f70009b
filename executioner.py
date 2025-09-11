@@ -1,12 +1,15 @@
-import re, pysrt, math, spacy, numpy as np, pandas as pd, torch, sys, csv, logging
+import re, pysrt, spacy, numpy as np, pandas as pd, torch, sys, csv, logging, os
 from datetime import datetime, timedelta, time
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Optional
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 from keybert import KeyBERT
-from transformers import pipeline
-from bertopic import BERTopic
 from tqdm import tqdm
+from multiprocessing import Pool, cpu_count
+
+# Force PyTorch / NumPy to use all CPU threads
+os.environ["OMP_NUM_THREADS"] = str(cpu_count())
+os.environ["MKL_NUM_THREADS"] = str(cpu_count())
 
 # --- Configuration ---
 class Cfg:
@@ -21,23 +24,12 @@ class Cfg:
     DYNAMIC_THRESHOLD_PERCENTILE: float = 90.0
     TOPIC_KEYWORD_THRESHOLD: float = 0.35
     REDUNDANCY_SIMILARITY_THRESHOLD: float = 0.85
-    MERGE_SIMILARITY_THRESHOLD: float = 0.65
 
     WEIGHTS = {
         'topic_score': 0.8,
-        'sentiment': 0.5,
         'named_entity': 0.3,
-        'emotion_intensity': 0.75,
         'hook': 2.0,
-        'surprise': 1.5,
         'brevity': 1.0,
-        'narrative_arc': 1.2,
-        'explainer': 1.1,
-        'cliffhanger': 1.3,
-        'controversy': 0.8,
-        'contextual_topic': 0.7,
-        'speech_rate_boost': 0.5,
-        'vocal_intensity_boost': 0.6
     }
 
     VIRALITY_PRIORS = {'secret': 1.3, 'biggest': 1.2, 'hidden': 1.25, 'money': 1.5, 'danger': 1.4}
@@ -50,15 +42,30 @@ class Cfg:
         re.compile(r"\b(you won'?t believe|mind[- ]?blow)\b", re.I),
         re.compile(r"\b(\d+[\,\d]*\s*(million|billion|trillion|%)?)\b", re.I),
     ]
-    SURPRISE_PATTERNS = [re.compile(r"\b(actually|in fact|turns out|counterintuitive|paradox|but|however)\b", re.I)]
-    CLIFFHANGER_END_PATTERNS = [re.compile(r"\?$", re.M), re.compile(r"\.\.\.$", re.M)]
-
-    MAX_TITLE_LEN = 72
-    MAX_THUMB_LEN = 28
 
 
 def safe_time_to_dt(t: time) -> datetime:
     return datetime.combine(datetime.min, t)
+
+
+def score_clip_worker(args):
+    """Worker for multiprocessing scoring."""
+    text, duration, entity_count, cfg = args
+    words = set(text.lower().split())
+    hook_score = sum(1 for pat in cfg.HOOK_PATTERNS if pat.search(text))
+    brevity_bonus = 1.0 if cfg.MIN_DURATION_SECONDS <= duration <= 15 else 0.5
+    virality_boost = sum(cfg.VIRALITY_PRIORS.get(w, 0) for w in words)
+
+    w = cfg.WEIGHTS
+    score = (
+        w['hook'] * hook_score +
+        w['named_entity'] * entity_count +
+        w['brevity'] * brevity_bonus +
+        virality_boost
+    )
+    if any(word in words for word in cfg.BAD_WORDS):
+        score *= 0.2
+    return score
 
 
 class VideoSegmenter:
@@ -68,9 +75,9 @@ class VideoSegmenter:
         self.cfg = Cfg()
 
     def _load_models(self):
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = "cpu"  # force CPU
         try:
-            logging.info("⏳ Loading SpaCy model...")
+            logging.info("⏳ Loading SpaCy...")
             self.nlp = spacy.load("en_core_web_sm")
 
             logging.info("⏳ Loading SentenceTransformer...")
@@ -79,22 +86,9 @@ class VideoSegmenter:
             logging.info("⏳ Loading KeyBERT...")
             self.kw_model = KeyBERT(model=self.embed_model)
 
-            logging.info("⏳ Loading BERTopic (optional)...")
-            self.topic_model = BERTopic(embedding_model=self.embed_model)
-
-            logging.info("⏳ Loading Emotion Classifier...")
-            self.classifier = pipeline(
-                "text-classification",
-                model="j-hartmann/emotion-english-distilroberta-base",
-                top_k=None, device=0 if self.device == "cuda" else -1
-            )
-
-            logging.info("⏳ Loading Summarizer...")
-            self.summarizer = pipeline("summarization", model="sshleifer/distilbart-cnn-12-6")
-
-            logging.info("✅ All models loaded successfully!")
+            logging.info("✅ Models loaded successfully!")
         except Exception as e:
-            logging.error(f"Failed to load a model: {e}")
+            logging.error(f"Model loading failed: {e}")
             raise
 
     def _load_subtitles(self, file_path: str) -> List[Dict]:
@@ -146,24 +140,6 @@ class VideoSegmenter:
         boundaries.add(len(sentences))
         return sorted(list(boundaries))
 
-    def _score_segment(self, text: str, duration: float, doc, global_topics: List[str]) -> float:
-        words = set(text.lower().split())
-        hook_score = sum(1 for pat in self.cfg.HOOK_PATTERNS if pat.search(text))
-        entity_score = len(doc.ents)
-        brevity_bonus = 1.0 if self.cfg.MIN_DURATION_SECONDS <= duration <= 15 else 0.5
-        virality_boost = sum(self.cfg.VIRALITY_PRIORS.get(w, 0) for w in words)
-
-        w = self.cfg.WEIGHTS
-        score = (
-            w['hook'] * hook_score +
-            w['named_entity'] * entity_score +
-            w['brevity'] * brevity_bonus +
-            virality_boost
-        )
-        if any(word in words for word in self.cfg.BAD_WORDS):
-            score *= 0.2
-        return score
-
     def _gen_titles(self, topics: str) -> List[str]:
         base = topics.split(',')[0].strip().title() if topics and topics != 'N/A' else 'This Concept'
         return [
@@ -195,20 +171,19 @@ class VideoSegmenter:
         if not sentence_entries:
             return None
 
-        # Precompute embeddings & SpaCy docs
+        # Precompute embeddings & SpaCy docs (multi-core)
         sent_texts = [e['text'] for e in sentence_entries]
         sent_embeddings = self.embed_model.encode(sent_texts, batch_size=32, convert_to_tensor=True)
-        docs = list(self.nlp.pipe(sent_texts, batch_size=32))
+        docs = list(self.nlp.pipe(sent_texts, batch_size=64, n_process=cpu_count()))
+        entity_counts = [len(doc.ents) for doc in docs]
 
         # Global keywords once
         full_transcript = " ".join(sent_texts)
         global_keywords = self.kw_model.extract_keywords(full_transcript, top_n=20)
-        global_topics = [kw for kw, _ in global_keywords]
 
         # Boundaries + candidates
         boundaries = self._detect_boundaries(sentence_entries)
-        all_clips = []
-
+        candidates = []
         for i in tqdm(range(len(boundaries)-1), desc="Generating Clips"):
             seg = sentence_entries[boundaries[i]:boundaries[i+1]]
             for start in range(len(seg)):
@@ -219,19 +194,30 @@ class VideoSegmenter:
                     duration = (safe_time_to_dt(end_t) - safe_time_to_dt(start_t)).total_seconds()
                     if self.cfg.MIN_DURATION_SECONDS <= duration <= self.cfg.MAX_DURATION_SECONDS:
                         text = " ".join(e['text'] for e in seg[start:end+1])
-                        doc = self.nlp(text)  # lightweight parse for entities
-                        score = self._score_segment(text, duration, doc, global_topics)
-                        all_clips.append({
-                            'Score': score, 'Start': start_t, 'End': end_t,
-                            'Duration': duration, 'Preview': text, 'Topics': "N/A"
-                        })
+                        entity_count = sum(entity_counts[boundaries[i]+k] for k in range(start, end+1))
+                        candidates.append((text, duration, entity_count, self.cfg, start_t, end_t))
+
+        # Parallel scoring
+        with Pool(cpu_count()) as pool:
+            scores = pool.map(score_clip_worker, [(c[0], c[1], c[2], c[3]) for c in candidates])
+
+        all_clips = []
+        for idx, c in enumerate(candidates):
+            all_clips.append({
+                'Score': scores[idx],
+                'Start': c[4],
+                'End': c[5],
+                'Duration': c[1],
+                'Preview': c[0],
+                'Topics': "N/A"
+            })
 
         if not all_clips:
             return None
 
-        # Shortlist before KeyBERT
-        scores = [c['Score'] for c in all_clips]
-        threshold = np.percentile(scores, self.cfg.DYNAMIC_THRESHOLD_PERCENTILE)
+        # Shortlist
+        score_vals = [c['Score'] for c in all_clips]
+        threshold = np.percentile(score_vals, self.cfg.DYNAMIC_THRESHOLD_PERCENTILE)
         shortlist = [c for c in all_clips if c['Score'] >= threshold][:top_k*3]
 
         # KeyBERT enrichment
@@ -248,12 +234,11 @@ class VideoSegmenter:
         output_data = []
         for i, clip in enumerate(final_clips):
             titles = self._gen_titles(clip['Topics'])
-            start_t, end_t = clip['Start'], clip['End']
-            new_end_dt = datetime.combine(datetime.min, end_t) + timedelta(seconds=1)
+            new_end_dt = datetime.combine(datetime.min, clip['End']) + timedelta(seconds=1)
             output_data.append({
                 'Rank': i+1,
                 'Score': f"{clip['Score']:.2f}",
-                'Start': start_t.strftime('%H:%M:%S'),
+                'Start': clip['Start'].strftime('%H:%M:%S'),
                 'End': new_end_dt.strftime('%H:%M:%S'),
                 'Duration': f"{clip['Duration']:.2f}s",
                 'Titles': " | ".join(titles),
