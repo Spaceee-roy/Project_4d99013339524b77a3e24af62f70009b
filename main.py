@@ -1,8 +1,16 @@
-import os, time, subprocess, numpy as np, pandas as pd, sys, assemblyai as aai; from tqdm import tqdm; from executioner import VideoSegmenter; from pathlib import Path; import face_recognition, cv2; from scipy.interpolate import CubicSpline, interp1d;aai.settings.api_key = '4d99013339524b77a3e24af62f70009b'; from moviepy import VideoFileClip
+import os, time, subprocess, numpy as np, pandas as pd, sys, assemblyai as aai;
+from tqdm import tqdm;
+from executioner import VideoSegmenter;
+from pathlib import Path;
+import face_recognition, cv2;
+from scipy.interpolate import CubicSpline, interp1d;
+
+aai.settings.api_key = '4d99013339524b77a3e24af62f70009b';
+
+from moviepy.editor import VideoFileClip
 
 def cut_video(input_path, output_path, start_time, end_time):
     import shutil
-
     # Ensure absolute paths
     input_path = os.path.abspath(input_path)
     output_path = os.path.abspath(output_path)
@@ -18,17 +26,17 @@ def cut_video(input_path, output_path, start_time, end_time):
         return False
 
     trim_command = [
-       "ffmpeg", "-y",
-    "-ss", str(start_time),
-    "-to", str(end_time),
-    "-i", input_path,
-    "-c", "copy",
-    output_path
+        "ffmpeg",
+        "-y",
+        "-ss", str(start_time),
+        "-to", str(end_time),
+        "-i", input_path,
+        "-c", "copy",
+        output_path
     ]
 
     print(f"[cut_video] Running command: {' '.join(trim_command)}")
     result = subprocess.run(trim_command, capture_output=True, text=True, )
-
 
     if result.returncode != 0:
         print(f"[cut_video] ffmpeg error:\n{result.stderr.strip()}")
@@ -39,12 +47,10 @@ def cut_video(input_path, output_path, start_time, end_time):
 
 def crop_video_with_padding(video_path: str, csv_path: str, output_path: str):
     """
-    Crops a video to a 9:16 aspect ratio based on horizontal face coordinates (x) 
-    from a CSV file. Face positions are interpolated per-frame to remove jitter.
+    Crops a video to a 9:16 aspect ratio based on horizontal face coordinates (x) from a CSV file.
+    Face positions are interpolated per-frame to remove jitter.
     """
-   
     print("📸 Phase 1: Detecting faces and generating timeline...")
-
     video_capture = cv2.VideoCapture(video_path)
     if not video_capture.isOpened():
         raise Exception("Could not open video file")
@@ -53,8 +59,9 @@ def crop_video_with_padding(video_path: str, csv_path: str, output_path: str):
     frame_width = int(video_capture.get(cv2.CAP_PROP_FRAME_WIDTH))
     frame_height = int(video_capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
     total_frames = int(video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
+
     face_x_positions, timestamps = [], []
-    last_x = frame_width // 2  # default to center
+    last_x = frame_width // 2 # default to center
 
     # Sample frames once per second to estimate face positions
     for frame_idx in tqdm(range(0, total_frames, int(fps))):
@@ -71,15 +78,15 @@ def crop_video_with_padding(video_path: str, csv_path: str, output_path: str):
             face_center_x = (right + left) / 2
             last_x = face_center_x
         else:
-            face_center_x = last_x  # fallback to last known position
+            face_center_x = last_x # fallback to last known position
 
         face_x_positions.append(face_center_x)
         timestamps.append(current_time)
 
     video_capture.release()
-
     df = pd.DataFrame({"Time": timestamps, "X": face_x_positions}).bfill()
     df.to_csv(csv_path, index=False)
+
 
     # --- 1. Load Video and CSV Data ---
     print("Loading video and CSV data...")
@@ -106,16 +113,15 @@ def crop_video_with_padding(video_path: str, csv_path: str, output_path: str):
     frame_times = np.arange(frame_count) / fps
     interp_series = (
         df.set_index("Time")["X"]
-          .reindex(frame_times, method=None)
-          .interpolate(method="linear")
-          .bfill().ffill()
+        .reindex(frame_times, method=None)
+        .interpolate(method="linear")
+        .bfill().ffill()
     )
     coords = interp_series.to_dict()
 
     # --- 2. Calculate 9:16 Crop Dimensions ---
     crop_h = original_height
     crop_w = int(crop_h * 9 / 16)
-
     if crop_w > original_width:
         print("Error: Video is not wide enough for a 9:16 crop at full height.")
         cap.release()
@@ -132,7 +138,7 @@ def crop_video_with_padding(video_path: str, csv_path: str, output_path: str):
         ret, frame = cap.read()
         if not ret:
             break
-
+        
         try:
             # Get interpolated face position for this frame
             face_center_x = coords.get(frame_num / fps, original_width // 2)
@@ -141,7 +147,7 @@ def crop_video_with_padding(video_path: str, csv_path: str, output_path: str):
             min_x = crop_w // 2
             max_x = original_width - (crop_w // 2)
             face_center_x = max(min_x, min(face_center_x, max_x))
-
+            
             # Calculate crop boundaries
             x1 = max(0, int(face_center_x - crop_w / 2))
             x2 = min(original_width, int(face_center_x + crop_w / 2))
@@ -158,7 +164,6 @@ def crop_video_with_padding(video_path: str, csv_path: str, output_path: str):
             # Crop frame
             if x1 >= 0 and x2 <= original_width:
                 cropped_frame = frame[:, x1:x2]
-                
                 # Verify dimensions before writing
                 if cropped_frame.shape[1] == crop_w and cropped_frame.shape[0] == crop_h:
                     out.write(cropped_frame)
@@ -182,7 +187,7 @@ def crop_video_with_padding(video_path: str, csv_path: str, output_path: str):
             x2 = x1 + crop_w
             cropped_frame = frame[:, x1:x2]
             out.write(cropped_frame)
-
+    
     # --- 5. Release Video Resources ---
     print("Releasing video resources...")
     cap.release()
@@ -196,14 +201,12 @@ def crop_video_with_padding(video_path: str, csv_path: str, output_path: str):
         final_clip = processed_clip.with_audio(original_clip.audio)
         time.sleep(3)
         final_clip.write_videofile(output_path, codec="libx264", audio_codec="aac")
-
         os.remove(temp_output_path)
         print(f"✅ Success! Final video saved to: {output_path}")
-
     except Exception as e:
         print("⚠️ Audio merge failed:", e)
 
-    
+
 def generate_subtitles(video_path, subtitle_path):
     # print("🎧 Transcribing audio...")
     transcriber = aai.Transcriber(config=aai.TranscriptionConfig(speech_model=aai.SpeechModel.best))
@@ -226,39 +229,39 @@ def add_subtitles(video_path, subtitle_path, output_path):
         if sys.platform.startswith("win"):
             if ':' in subtitle_path[:3]:
                 subtitle_path = subtitle_path.replace(':', '\\:')
-
+        
         # Build ffmpeg command without URL encoding
         command = [
-            'ffmpeg', '-y',
+            'ffmpeg',
+            '-y',
             '-i', video_path,
             '-vf',
             f"subtitles='{subtitle_path}':force_style='FontName=Roboto,Alignment=2,MarginV=75,MarginL=10,MarginR=10,FontSize=14,BorderStyle=3, Outline=2,Shadow=0,BackColour=&H00620AFA&,Bold=1,PrimaryColour=&HFFFFFF&'",
             '-c:a', 'copy',
             output_path
         ]
-
+        
         # Run the command
         subprocess.run(command, check=True)
         print(f"✅ Subtitles added to {output_path}")
-
     except subprocess.CalledProcessError as e:
         print(f"Error adding subtitles: {e.stderr if hasattr(e, 'stderr') else str(e)}")
     except Exception as e:
         print(f"Unexpected error: {str(e)}")
 
 def force_windows_path(p):
-    return Path(p).resolve().as_posix()  # Always C:/... format for ffmpeg
+    return Path(p).resolve().as_posix() # Always C:/... format for ffmpeg
 
 def process_all_segments():
-   
-
     filepath = input("Enter SRT file name (e.g., subtitles.srt): ").strip()
     input_video_name = input("Enter video file name (e.g., video.mp4): ").strip()
+
     script_dir = Path(__file__).resolve().parent
     srt_path = force_windows_path(script_dir / filepath)
     input_video = force_windows_path(script_dir / input_video_name)
 
-    override = input("Type override code to use existing viral_clips.csv (leave blank to regenerate): ")
+    override = input("Type override code to use existing segments.csv (leave blank to regenerate): ")
+
     if override != "y":
         segmenter = VideoSegmenter()
         segmenter.process_file(srt_path)
@@ -266,28 +269,28 @@ def process_all_segments():
         print("⚠️: Using existing viral_clips.csv (no new segmentation will be performed).")
 
     df = pd.read_csv(script_dir / 'viral_clips.csv')
-
     df['Start'] = df['Start'].apply(lambda s: s if ':' in s else f"0:{s}")
     df['End'] = df['End'].apply(lambda s: s if ':' in s else f"0:{s}")
     df['Start_seconds'] = pd.to_timedelta(df['Start']).dt.total_seconds().astype(int)
     df['End_seconds'] = pd.to_timedelta(df['End']).dt.total_seconds().astype(int)
-    goodname = input_video_name.replace(".mp4", "")
 
+    goodname = input_video_name.replace(".mp4", "")
     temp_dir = script_dir / "temp"
     temp_dir.mkdir(exist_ok=True)
-
+    
     for idx, row in df.iterrows():
         start = row['Start_seconds']
         end = row['End_seconds']
         trueidx = idx + 1
+        
         print(f"\n--- Processing Segment {trueidx} | {start}s to {end}s ---")
-
+        
         base_path = temp_dir / f"{goodname.strip()}_topclip_{trueidx:02d}"
-
-        trimmed_output = force_windows_path(base_path.with_suffix('.mp4')) 
+        trimmed_output = force_windows_path(base_path.with_suffix('.mp4'))
         combined_output = force_windows_path(base_path.with_name(base_path.name + '_with_audio.mp4'))
         subtitle_path = force_windows_path(base_path.with_suffix('.srt'))
         final_output = force_windows_path(base_path.with_name(base_path.name + '_final.mp4'))
+
         cut_video(input_video, trimmed_output, start, end)
         crop_video_with_padding(trimmed_output,'face_position.csv',combined_output)
         generate_subtitles(combined_output, subtitle_path)
@@ -299,7 +302,7 @@ def process_all_segments():
             except Exception as e:
                 print(e)
                 break
-
+    
     print("\n✅ All segments processed successfully.")
 
 
