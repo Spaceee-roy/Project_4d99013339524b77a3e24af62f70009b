@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Full-production Video Segmenter (copy-paste ready)
+Full-production Video Segmenter
 - SRT parsing
 - Sentence chunking & boundary detection via embeddings
 - Candidate clip generation with timestamps/duration
