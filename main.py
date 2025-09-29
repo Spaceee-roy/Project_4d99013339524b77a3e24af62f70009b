@@ -1,13 +1,13 @@
 import os, time, subprocess, numpy as np, pandas as pd, sys, assemblyai as aai;
 from tqdm import tqdm;
-from executioner import VideoSegmenter;
+from executioner import process_file
 from pathlib import Path;
 import face_recognition, cv2;
-from scipy.interpolate import CubicSpline, interp1d;
 
-aai.settings.api_key = '4d99013339524b77a3e24af62f70009b';
 
-from moviepy.editor import VideoFileClip
+aai.settings.api_key = ''
+
+from moviepy import VideoFileClip
 
 def cut_video(input_path, output_path, start_time, end_time):
     import shutil
@@ -158,6 +158,7 @@ def crop_video_with_padding(video_path: str, csv_path: str, output_path: str):
                 x2 = x1 + crop_w
                 # If x2 is now too large, adjust x1 instead
                 if x2 > original_width:
+                    
                     x2 = original_width
                     x1 = x2 - crop_w
 
@@ -249,25 +250,27 @@ def add_subtitles(video_path, subtitle_path, output_path):
     except Exception as e:
         print(f"Unexpected error: {str(e)}")
 
+def Segmenter(video_path: str, srt_path: str = "srt_path.srt", audio_path: str = "temp_video_pause_finder.wav", ):
+    subprocess.run([
+        "ffmpeg", "-y", "-i", video_path,
+        "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", audio_path
+    ])
+
+    generate_subtitles(audio_path, srt_path)
+    
+    process_file(srt_path)
+
 def force_windows_path(p):
-    return Path(p).resolve().as_posix() # Always C:/... format for ffmpeg
+    return Path(p).resolve().as_posix()
 
 def process_all_segments():
-    filepath = input("Enter SRT file name (e.g., subtitles.srt): ").strip()
+    
     input_video_name = input("Enter video file name (e.g., video.mp4): ").strip()
-
+    
     script_dir = Path(__file__).resolve().parent
-    srt_path = force_windows_path(script_dir / filepath)
+
     input_video = force_windows_path(script_dir / input_video_name)
-
-    override = input("Type override code to use existing segments.csv (leave blank to regenerate): ")
-
-    if override != "y":
-        segmenter = VideoSegmenter()
-        segmenter.process_file(srt_path)
-    else:
-        print("⚠️: Using existing viral_clips.csv (no new segmentation will be performed).")
-
+    Segmenter(input_video_name)
     df = pd.read_csv(script_dir / 'viral_clips.csv')
     df['Start'] = df['Start'].apply(lambda s: s if ':' in s else f"0:{s}")
     df['End'] = df['End'].apply(lambda s: s if ':' in s else f"0:{s}")
