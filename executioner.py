@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Full-production Video Segmenter
+Full-production Video Segmenter (copy-paste ready)
 - SRT parsing
 - Sentence chunking & boundary detection via embeddings
 - Candidate clip generation with timestamps/duration
@@ -18,14 +18,12 @@ INSTRUCTIONS:
 - Set environment variable ASSEMBLYAI_API_KEY if you want AssemblyAI pause detection.
 - Run: python video_segmenter_full.py <file.srt> [file.mp3] [top_k]
 
-This file is designed so you can drop it into your project and run. Swap HF models or tune weights as desired.
 """
 
 import os
 import re
 import sys
 import logging
-import random
 import string
 from pathlib import Path
 from datetime import datetime, time
@@ -50,7 +48,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 # -------------------------
 class Cfg:
     # clip durations
-    MAX_DURATION_SECONDS = 45
+    MAX_DURATION_SECONDS = 35
     MIN_DURATION_SECONDS = 10
 
     # segmentation
@@ -286,31 +284,49 @@ def generate_candidates(
 
     start_idx = 0
     start_t = sentence_entries[0]['start']
-    last_pause_time = None
     flagged = False
+
+    BACKWARD_LEEWAY = 5   # seconds before cap to search for a natural stop
+    FORWARD_LEEWAY = 10    # seconds after cap to allow finishing a sentence
+
+    def find_backward_cut(idx, max_end):
+        """Look backwards for punctuation/pause within BACKWARD_LEEWAY."""
+        max_end_s = time_to_seconds(max_end)
+        for j in range(idx, -1, -1):
+            end_time = sentence_entries[j]['end']
+            end_s = time_to_seconds(end_time)
+            if max_end_s - end_s > BACKWARD_LEEWAY:
+                break
+            text = sentence_entries[j]['text'].strip()
+            if text.endswith(('.', '?', '!')):
+                return j, end_time
+            if pauses:
+                for p in pauses:
+                    if abs(end_s - p['start_s']) < 0.5 or (p['start_s'] <= end_s <= p['end_s']):
+                        return j, end_time
+        return None, max_end
+
+    def find_forward_cut(idx, max_end):
+        """Look forward slightly to finish a sentence if close."""
+        max_end_s = time_to_seconds(max_end)
+        for j in range(idx + 1, len(sentence_entries)):
+            end_time = sentence_entries[j]['end']
+            end_s = time_to_seconds(end_time)
+            if end_s - max_end_s > FORWARD_LEEWAY:
+                break
+            text = sentence_entries[j]['text'].strip()
+            if text.endswith(('.', '?', '!')):
+                return j, end_time
+        return None, max_end
 
     for i, sent in enumerate(sentence_entries):
         curr_end = sent['end']
         dur = duration_seconds(start_t, curr_end)
 
-        # check pause alignment (within 0.5s tolerance) if pauses exist
-        is_pause = False
-        if pauses:
-            curr_end_s = time_to_seconds(curr_end)
-            # consider a pause matching if curr_end near pause boundary
-            for p in pauses:
-                # p has start_s in seconds
-                if abs(curr_end_s - p['start_s']) < 0.5 or (p['start_s'] <= curr_end_s <= p['end_s']):
-                    is_pause = True
-                    last_pause_time = curr_end
-                    break
-
-        # semantic boundary flagged
         if i in boundaries:
             flagged = True
 
-        # cut if semantic flagged + pause found + dur >= MIN
-        if flagged and is_pause and dur >= cfg.MIN_DURATION_SECONDS:
+        if flagged and dur >= cfg.MIN_DURATION_SECONDS:
             text = " ".join(e['text'] for e in sentence_entries[start_idx:i+1]).strip()
             candidates.append({
                 'Preview': text,
@@ -321,12 +337,20 @@ def generate_candidates(
             start_idx = i + 1
             start_t = curr_end
             flagged = False
-            last_pause_time = None
 
-        # cut if hitting max duration
         elif dur >= cfg.MAX_DURATION_SECONDS:
-            cut_t = last_pause_time if last_pause_time else curr_end
-            cut_idx = i if last_pause_time else i
+            # try backward natural cut
+            cut_idx, cut_t = find_backward_cut(i, curr_end)
+            if cut_idx is None:
+                cut_idx = i
+                cut_t = curr_end
+
+            # if no backward cut, try forward extension
+            if cut_idx == i:  
+                f_idx, f_t = find_forward_cut(i, curr_end)
+                if f_idx is not None:
+                    cut_idx, cut_t = f_idx, f_t
+
             text = " ".join(e['text'] for e in sentence_entries[start_idx:cut_idx+1]).strip()
             dur_cut = duration_seconds(start_t, cut_t)
             if dur_cut >= cfg.MIN_DURATION_SECONDS:
@@ -339,9 +363,7 @@ def generate_candidates(
             start_idx = cut_idx + 1
             start_t = cut_t
             flagged = False
-            last_pause_time = None
 
-    # flush last segment
     if start_idx < len(sentence_entries):
         end_t = sentence_entries[-1]['end']
         dur = duration_seconds(start_t, end_t)
@@ -353,20 +375,10 @@ def generate_candidates(
                 'End': end_t,
                 'Duration': dur
             })
-        elif candidates:  # too short: merge into previous
-            candidates[-1]['Preview'] += ' ' + text
-            candidates[-1]['End'] = end_t
-            candidates[-1]['Duration'] = duration_seconds(candidates[-1]['Start'], end_t)
-        else:  # single short clip, keep anyway
-            candidates.append({
-                'Preview': text,
-                'Start': start_t,
-                'End': end_t,
-                'Duration': dur
-            })
 
-    logging.info(f'Generated {len(candidates)} candidate clips (min duration enforced).')
+    logging.info(f'Generated {len(candidates)} candidate clips (backward + forward leeway enforced).')
     return candidates
+
 
 # -------------------------
 # Precompute per-candidate features (main process heavy work)
@@ -744,4 +756,4 @@ if __name__ == '__main__':
 
     df_result = process_file(srt_file, audio, top_k=top_k)
     if df_result is not None:
-        print(df_result.to_string(index=False))
+        print(df_result)
