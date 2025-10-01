@@ -1,16 +1,14 @@
 import os, time, subprocess, numpy as np, pandas as pd, sys, assemblyai as aai;
 from tqdm import tqdm;
-from executioner import process_file
 from pathlib import Path;
 import face_recognition, cv2;
-
+import shutil
 
 aai.settings.api_key = ''
 
-from moviepy import VideoFileClip
 
 def cut_video(input_path, output_path, start_time, end_time):
-    import shutil
+
     # Ensure absolute paths
     input_path = os.path.abspath(input_path)
     output_path = os.path.abspath(output_path)
@@ -45,10 +43,11 @@ def cut_video(input_path, output_path, start_time, end_time):
     print(f"[cut_video] ✅ Trimmed video saved: {output_path}")
     return True
 
-def crop_video_with_padding(video_path: str, csv_path: str, output_path: str):
+def crop_video_with_padding(video_path: str, csv_path: str, output_path: str, face_scale: float = 0.10):
     """
     Crops a video to a 9:16 aspect ratio based on horizontal face coordinates (x) from a CSV file.
     Face positions are interpolated per-frame to remove jitter.
+    face_scale: fraction to downscale frames for face detection (e.g. 0.10 = 10% size).
     """
     print("📸 Phase 1: Detecting faces and generating timeline...")
     video_capture = cv2.VideoCapture(video_path)
@@ -60,33 +59,50 @@ def crop_video_with_padding(video_path: str, csv_path: str, output_path: str):
     frame_height = int(video_capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
     total_frames = int(video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    face_x_positions, timestamps = [], []
-    last_x = frame_width // 2 # default to center
+    if face_scale <= 0 or face_scale > 1:
+        raise ValueError("face_scale must be between 0 (exclusive) and 1 (inclusive)")
 
-    # Sample frames once per second to estimate face positions
-    for frame_idx in tqdm(range(0, total_frames, int(fps))):
+    inv_scale = 1.0 / face_scale
+    face_x_positions, timestamps = [], []
+    last_x = frame_width // 2  # default to center (in original coordinates)
+
+    # Sample frames once per second to estimate face positions (detect on small frames)
+    for frame_idx in tqdm(range(0, total_frames, max(1, int(fps)))):
         video_capture.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
         ret, frame = video_capture.read()
         if not ret:
             break
 
         current_time = frame_idx / fps
-        face_locations = face_recognition.face_locations(frame)
+
+        # Downscale for faster face detection
+        small_frame = cv2.resize(frame, (0, 0), fx=face_scale, fy=face_scale, interpolation=cv2.INTER_LINEAR)
+        # Convert BGR -> RGB for face_recognition
+        small_rgb = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
+
+        # Detect faces on the small frame
+        face_locations = face_recognition.face_locations(small_rgb)
 
         if face_locations:
+            # face_locations returns (top, right, bottom, left) on the small frame
             top, right, bottom, left = face_locations[0]
-            face_center_x = (right + left) / 2
+            # Compute center x in small-frame coordinates then map back to original
+            face_center_x_small = (right + left) / 2.0
+            face_center_x = face_center_x_small * inv_scale
             last_x = face_center_x
         else:
-            face_center_x = last_x # fallback to last known position
+            # fallback to last known position (already in original coords)
+            face_center_x = last_x
 
         face_x_positions.append(face_center_x)
         timestamps.append(current_time)
 
     video_capture.release()
+
+    # Save timeline CSV (columns: Time, X)
     df = pd.DataFrame({"Time": timestamps, "X": face_x_positions}).bfill()
     df.to_csv(csv_path, index=False)
-
+    print(f"Saved face timeline CSV -> {csv_path}")
 
     # --- 1. Load Video and CSV Data ---
     print("Loading video and CSV data...")
@@ -104,9 +120,11 @@ def crop_video_with_padding(video_path: str, csv_path: str, output_path: str):
         df = pd.read_csv(csv_path)
     except FileNotFoundError:
         print(f"Error: CSV file not found at {csv_path}")
+        cap.release()
         return
     except KeyError:
-        print("Error: Your CSV file must contain 'Timestamp' and 'Face_X_Position' columns.")
+        print("Error: Your CSV file must contain 'Time' and 'X' columns.")
+        cap.release()
         return
 
     # --- Interpolate face positions per frame ---
@@ -138,42 +156,36 @@ def crop_video_with_padding(video_path: str, csv_path: str, output_path: str):
         ret, frame = cap.read()
         if not ret:
             break
-        
+
         try:
-            # Get interpolated face position for this frame
+            # Get interpolated face position for this frame (coords are in original pixels)
             face_center_x = coords.get(frame_num / fps, original_width // 2)
 
             # Ensure face_center_x stays within valid crop bounds
             min_x = crop_w // 2
             max_x = original_width - (crop_w // 2)
             face_center_x = max(min_x, min(face_center_x, max_x))
-            
+
             # Calculate crop boundaries
             x1 = max(0, int(face_center_x - crop_w / 2))
             x2 = min(original_width, int(face_center_x + crop_w / 2))
 
             # Double check crop width
             if x2 - x1 != crop_w:
-                # Adjust x2 if needed
                 x2 = x1 + crop_w
-                # If x2 is now too large, adjust x1 instead
                 if x2 > original_width:
-                    
                     x2 = original_width
                     x1 = x2 - crop_w
 
             # Crop frame
             if x1 >= 0 and x2 <= original_width:
                 cropped_frame = frame[:, x1:x2]
-                # Verify dimensions before writing
                 if cropped_frame.shape[1] == crop_w and cropped_frame.shape[0] == crop_h:
                     out.write(cropped_frame)
                 else:
-                    # Resize if dimensions don't match
                     cropped_frame = cv2.resize(cropped_frame, (crop_w, crop_h))
                     out.write(cropped_frame)
             else:
-                # Fallback to center crop if coordinates are invalid
                 center_x = original_width // 2
                 x1 = center_x - (crop_w // 2)
                 x2 = x1 + crop_w
@@ -182,32 +194,65 @@ def crop_video_with_padding(video_path: str, csv_path: str, output_path: str):
 
         except Exception as e:
             print(f"Error processing frame {frame_num}: {e}")
-            # Fallback to center crop
             center_x = original_width // 2
             x1 = center_x - (crop_w // 2)
             x2 = x1 + crop_w
             cropped_frame = frame[:, x1:x2]
             out.write(cropped_frame)
-    
-    # --- 5. Release Video Resources ---
+
+# --- 5. Release Video Resources ---
     print("Releasing video resources...")
     cap.release()
     out.release()
 
-    # --- 6. Add audio from original video ---
-    print("Adding audio back using MoviePy...")
-    try:
-        original_clip = VideoFileClip(video_path)
-        processed_clip = VideoFileClip(temp_output_path)
-        final_clip = processed_clip.with_audio(original_clip.audio)
-        time.sleep(3)
-        final_clip.write_videofile(output_path, codec="libx264", audio_codec="aac")
-        os.remove(temp_output_path)
-        print(f"✅ Success! Final video saved to: {output_path}")
-    except Exception as e:
-        print("⚠️ Audio merge failed:", e)
+    # --- 6. Add audio back using ffmpeg (stream copy) ---
+    print("Muxing audio back using ffmpeg (copy)...")
+    import shutil
+    if not shutil.which("ffmpeg"):
+        print("❌ ffmpeg not found on PATH — cannot mux audio. Leaving temp video without audio.")
+        try:
+            # Move temp to final so pipeline continues, but warn user
+            shutil.move(temp_output_path, output_path)
+            print(f"⚠️ Moved temp video to {output_path} (no audio).")
+        except Exception as e:
+            print(f"Failed to move temp file: {e}")
+        return
 
+    # Build ffmpeg command:
+    # - input 0: processed video (temp, contains video only)
+    # - input 1: original video (to grab its audio stream)
+    # - map video from input 0, audio from input 1
+    # - copy codecs to avoid re-encoding
+    ffmpeg_cmd = [
+        "ffmpeg", "-y",
+        "-i", temp_output_path,
+        "-i", video_path,
+        "-map", "0:v:0",
+        "-map", "1:a:0",
+        "-c:v", "copy",
+        "-c:a", "copy",
+        "-shortest",
+        output_path
+    ]
 
+    result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        # ffmpeg failed (likely original has no audio or a stream mapping mismatch). Fallback.
+        print("⚠️ ffmpeg muxing failed. ffmpeg output:")
+        print(result.stderr.strip()[:1000])  # print first chunk of stderr for debugging
+        try:
+            # If mux failed, fall back to moving the temp video into place (no audio).
+            shutil.move(temp_output_path, output_path)
+            print(f"⚠️ Fallback: moved temp video to {output_path} (no audio).")
+        except Exception as e:
+            print(f"❌ Fallback move failed: {e}")
+    else:
+        # Success — remove temp and finish
+        try:
+            os.remove(temp_output_path)
+        except Exception:
+            pass
+        print(f"✅ Success! Final video with audio saved to: {output_path}")
 def generate_subtitles(video_path, subtitle_path):
     # print("🎧 Transcribing audio...")
     transcriber = aai.Transcriber(config=aai.TranscriptionConfig(speech_model=aai.SpeechModel.best))
@@ -249,8 +294,8 @@ def add_subtitles(video_path, subtitle_path, output_path):
         print(f"Error adding subtitles: {e.stderr if hasattr(e, 'stderr') else str(e)}")
     except Exception as e:
         print(f"Unexpected error: {str(e)}")
-
 def Segmenter(video_path: str, srt_path: str = "srt_path.srt", audio_path: str = "temp_video_pause_finder.wav", ):
+    from executioner import process_file
     subprocess.run([
         "ffmpeg", "-y", "-i", video_path,
         "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", audio_path
@@ -259,6 +304,7 @@ def Segmenter(video_path: str, srt_path: str = "srt_path.srt", audio_path: str =
     generate_subtitles(audio_path, srt_path)
     
     process_file(srt_path)
+
 
 def force_windows_path(p):
     return Path(p).resolve().as_posix()
@@ -270,6 +316,7 @@ def process_all_segments():
     script_dir = Path(__file__).resolve().parent
 
     input_video = force_windows_path(script_dir / input_video_name)
+    
     Segmenter(input_video_name)
     df = pd.read_csv(script_dir / 'viral_clips.csv')
     df['Start'] = df['Start'].apply(lambda s: s if ':' in s else f"0:{s}")
