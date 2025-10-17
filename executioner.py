@@ -66,7 +66,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 # ---------------------------------------------------------------------
 class Cfg:
     MAX_DURATION_SECONDS = 45
-    MIN_DURATION_SECONDS = 15
+    MIN_DURATION_SECONDS = 20
     WINDOW_SIZE = 2
     DYNAMIC_STD_FACTOR = 0.5
     RELATIVE_DROP = 0.15
