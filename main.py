@@ -3,11 +3,14 @@ from tqdm import tqdm;
 from pathlib import Path;
 import face_recognition, cv2;
 import shutil
-
-aai.settings.api_key = ''
+from dotenv import load_dotenv
+load_dotenv()
+key = os.getenv('ASSEMBLYAI_API_KEY')
+aai.settings.api_key = key
 
 
 def cut_video(input_path, output_path, start_time, end_time):
+    import shutil, subprocess, os
 
     # Ensure absolute paths
     input_path = os.path.abspath(input_path)
@@ -23,24 +26,52 @@ def cut_video(input_path, output_path, start_time, end_time):
         print("[cut_video] ❌ ffmpeg not found on PATH")
         return False
 
-    trim_command = [
-        "ffmpeg",
-        "-y",
+    # --- Attempt fast copy cut ---
+    fast_cmd = [
+        "ffmpeg", "-y",
         "-ss", str(start_time),
         "-to", str(end_time),
         "-i", input_path,
         "-c", "copy",
         output_path
     ]
+    print(f"[cut_video] ⚡ Fast trim: {' '.join(fast_cmd)}")
+    fast_result = subprocess.run(fast_cmd, capture_output=True, text=True)
 
-    print(f"[cut_video] Running command: {' '.join(trim_command)}")
-    result = subprocess.run(trim_command, capture_output=True, text=True, )
+    # Check for success and non-empty output
+    if (
+        fast_result.returncode == 0
+        and os.path.isfile(output_path)
+        and os.path.getsize(output_path) > 1024  # 1 KB threshold
+    ):
+        print(f"[cut_video] ✅ Fast copy successful: {output_path}")
+        return True
 
-    if result.returncode != 0:
-        print(f"[cut_video] ffmpeg error:\n{result.stderr.strip()}")
+    # --- Fallback: re-encode cut ---
+    print(f"[cut_video] ⚠️ Fast copy failed or empty. Retrying with re-encode...")
+    reencode_cmd = [
+        "ffmpeg", "-y",
+        "-ss", str(start_time),
+        "-to", str(end_time),
+        "-i", input_path,
+        "-c:v", "libx264",  # force re-encode for safety
+        "-c:a", "aac",
+        "-movflags", "+faststart",  # smoother playback
+        output_path
+    ]
+    print(f"[cut_video] 🔁 Re-encode trim: {' '.join(reencode_cmd)}")
+    re_result = subprocess.run(reencode_cmd, capture_output=True, text=True)
+
+    if re_result.returncode != 0:
+        print(f"[cut_video] ❌ ffmpeg re-encode error:\n{re_result.stderr.strip()}")
         return False
 
-    print(f"[cut_video] ✅ Trimmed video saved: {output_path}")
+    # Validate again after re-encoding
+    if not os.path.isfile(output_path) or os.path.getsize(output_path) < 1024:
+        print(f"[cut_video] ❌ Output file still empty after re-encode.")
+        return False
+
+    print(f"[cut_video] ✅ Re-encode successful: {output_path}")
     return True
 
 def crop_video_with_padding(video_path: str, csv_path: str, output_path: str, face_scale: float = 0.10):
@@ -294,71 +325,146 @@ def add_subtitles(video_path, subtitle_path, output_path):
         print(f"Error adding subtitles: {e.stderr if hasattr(e, 'stderr') else str(e)}")
     except Exception as e:
         print(f"Unexpected error: {str(e)}")
-def Segmenter(video_path: str, srt_path: str = "srt_path.srt", audio_path: str = "temp_video_pause_finder.wav", ):
+def Segmenter(video_path: str):
     from executioner import process_file
-    subprocess.run([
-        "ffmpeg", "-y", "-i", video_path,
-        "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", audio_path
-    ])
-
-    generate_subtitles(audio_path, srt_path)
-    
-    process_file(srt_path)
+    process_file(video_path)
 
 
 def force_windows_path(p):
     return Path(p).resolve().as_posix()
 
-def process_all_segments():
-    
-    input_video_name = input("Enter video file name (e.g., video.mp4): ").strip()
-    
-    script_dir = Path(__file__).resolve().parent
+def process_video(input_video_path, df_clips, temp_dir):
+    """Processes a single video file based on the clip data."""
+    print(f"\n=======================================================")
+    print(f"🎬 Starting processing for video: {input_video_path.name}")
+    print(f"=======================================================")
 
-    input_video = force_windows_path(script_dir / input_video_name)
-    
-    Segmenter(input_video_name)
-    df = pd.read_csv(script_dir / 'viral_clips.csv')
-    df['Start'] = df['Start'].apply(lambda s: s if ':' in s else f"0:{s}")
-    df['End'] = df['End'].apply(lambda s: s if ':' in s else f"0:{s}")
-    df['Start_seconds'] = pd.to_timedelta(df['Start']).dt.total_seconds().astype(int)
-    df['End_seconds'] = pd.to_timedelta(df['End']).dt.total_seconds().astype(int)
+    input_video = force_windows_path(input_video_path)
+    input_video_name = input_video_path.name
+    goodname = input_video_name.replace(input_video_path.suffix, "")
 
-    goodname = input_video_name.replace(".mp4", "")
-    temp_dir = script_dir / "temp"
-    temp_dir.mkdir(exist_ok=True)
-    
-    for idx, row in df.iterrows():
+    # Iterate through the rows (clips) in the DataFrame
+    for idx, row in df_clips.iterrows():
         start = row['Start_seconds']
         end = row['End_seconds']
         trueidx = idx + 1
-        
+
         print(f"\n--- Processing Segment {trueidx} | {start}s to {end}s ---")
-        
+
+        # Define temporary file paths for the current segment
         base_path = temp_dir / f"{goodname.strip()}_topclip_{trueidx:02d}"
         trimmed_output = force_windows_path(base_path.with_suffix('.mp4'))
         combined_output = force_windows_path(base_path.with_name(base_path.name + '_with_audio.mp4'))
         subtitle_path = force_windows_path(base_path.with_suffix('.srt'))
         final_output = force_windows_path(base_path.with_name(base_path.name + '_final.mp4'))
 
-        cut_video(input_video, trimmed_output, start, end)
-        crop_video_with_padding(trimmed_output,'face_position.csv',combined_output)
-        generate_subtitles(combined_output, subtitle_path)
-        add_subtitles(combined_output, subtitle_path, final_output)
+        try:
+            # 1. Cut the video segment
+            cut_video(input_video, trimmed_output, start, end)
+            
+            # 2. Crop the video with padding
+            # NOTE: 'face_position.csv' is assumed to be in the script directory or handled by your function
+            crop_video_with_padding(trimmed_output, 'face_position.csv', combined_output)
+            
+            # 3. Generate subtitles
+            generate_subtitles(combined_output, subtitle_path)
+            
+            # 4. Add subtitles to the final output
+            add_subtitles(combined_output, subtitle_path, final_output)
 
+        except Exception as e:
+            print(f"❌ Error processing segment {trueidx} for {input_video_name}: {e}")
+            break # Stop processing this video if an error occurs
+
+        # 5. Clean up temporary files
         for f in [trimmed_output, combined_output, subtitle_path]:
             try:
                 Path(f).unlink(missing_ok=True)
             except Exception as e:
-                print(e)
-                break
+                print(f"Error during cleanup of {f}: {e}")
+                # Don't break here, try to clean others if possible
+        
+    print(f"✅ Finished processing all segments for: {input_video_path.name}")
+
+
+def main():
+    """Main function to handle folder iteration and setup."""
+    # Resolve the directory where the script is running
+    script_dir = Path(__file__).resolve().parent
+
+    # --- Setup and User Input ---
     
-    print("\n✅ All segments processed successfully.")
+    # Get the folder containing the videos
+    input_folder_name = "Videos"
+    input_folder = script_dir / input_folder_name
+    
+    if not input_folder.is_dir():
+        print(f"Error: Folder '{input_folder_name}' not found at {input_folder}")
+        return
+
+    # Check if segmentation override is needed (this logic might need to be adapted
+    # if segmentation needs to run for *every* video initially)
+    
+    # Define temporary directory
+    temp_dir = script_dir / "temp"
+    temp_dir.mkdir(exist_ok=True)
+
+    # --- Load and prepare the clips DataFrame (viral_clips.csv) ---
+    try:
+        df = pd.read_csv(script_dir / 'viral_clips.csv')
+    except FileNotFoundError:
+        print("Error: 'viral_clips.csv' not found in the script directory.")
+        return
+    
+    # Pre-process the DataFrame columns for time conversion (as in your original script)
+    import re
+
+    def safe_time_to_seconds(t):
+        """Convert HH:MM:SS.xxx or M:SS.xxx to float seconds safely."""
+        if pd.isna(t):
+            return 0.0
+        t = str(t).strip()
+        # Handle 'MM:SS.xxx' and 'HH:MM:SS.xxx'
+        parts = re.split('[:]', t)
+        parts = [float(p) for p in parts]
+        if len(parts) == 3:
+            h, m, s = parts
+        elif len(parts) == 2:
+            h = 0
+            m, s = parts
+        else:
+            return float(t)
+        return h * 3600 + m * 60 + s
+
+    df['Start_seconds'] = df['Start'].apply(safe_time_to_seconds)
+    df['End_seconds'] = df['End'].apply(safe_time_to_seconds)
+
+    # --- Video Iteration ---
+    
+    # Find all .mp4 (or other video types) files in the input folder
+    video_files = list(input_folder.glob("*.mp4")) # Adjust extension if needed
+
+    if not video_files:
+        print(f"No .mp4 files found in the folder '{input_folder_name}'.")
+        return
+
+    print(f"\nFound {len(video_files)} video(s) to process.")
+    
+    for video_path in video_files:
+        # if override != 'y':
+            # Run segmentation before processing clips, if requested
+        Segmenter(video_path) 
+        
+        # Process the video using the prepared DataFrame
+        process_video(video_path, df, temp_dir)
+
+    print("\n🎉 **BATCH PROCESSING COMPLETE!** 🎉")
+
 
 
 if __name__ == '__main__':
     start = time.time()
-    process_all_segments()
+    main()
     elapsed = int(time.time() - start)
     hours, remainder = divmod(elapsed, 3600)
     minutes, seconds = divmod(remainder, 60)
