@@ -829,7 +829,7 @@ def precompute_and_score(candidates: List[Dict[str, Any]], audio_path: Optional[
 # ------------------------------------------------------------------------------
 # Redundancy filtering and selection
 # ------------------------------------------------------------------------------
-def filter_redundant_and_select(candidates: List[Dict[str, Any]], embeddings: np.ndarray, top_k: int = 6) -> List[Dict[str, Any]]:
+def filter_redundant_and_select(candidates: List[Dict[str, Any]], embeddings: np.ndarray, top_k: int = 10) -> List[Dict[str, Any]]:
     items = sorted(candidates, key=lambda x: x.get('Score', 0.0), reverse=True)
     final = []
     for it in items:
@@ -887,7 +887,7 @@ def generate_html_report(clips: List[Dict[str, Any]], csv_path: Path, out_path: 
 # ------------------------------------------------------------------------------
 def process_file(media_path: str,
                  srt_path: Optional[str] = None,
-                 top_k: int = 6,
+                 top_k: int = 10,
                  make_srt_if_missing: bool = True,
                  assemblyai_force_refresh: bool = False,
                  refine_endings: bool = True,
