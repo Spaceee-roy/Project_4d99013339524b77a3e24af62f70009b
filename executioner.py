@@ -134,7 +134,7 @@ def get_models():
 
     # spaCy
     try:
-        nlp = spacy.load("en_core_web_trf")
+        nlp = spacy.load("en_core_web_lg")
         logging.info("[MODELS] spaCy loaded: en_core_web_trf")
     except Exception as e:
         logging.error("spaCy en_core_web_trf not found. Please install it: python -m spacy download en_core_web_trf")
@@ -199,8 +199,15 @@ def transcribe_and_cache_with_assemblyai(audio_path: str, api_key: Optional[str]
     """
     Single-call AssemblyAI transcription with disk caching.
     Returns {'transcript': str|None, 'words':[], 'pauses':[], 'speakers':[]}
+    Also writes an .srt file named 'srt_path.srt' in the same folder as this script.
     """
+    import os
+    from pathlib import Path
+
     cache_path = _get_cached_transcript_json_path(audio_path)
+    script_dir = Path(os.path.dirname(os.path.abspath(__file__)))
+    srt_path = script_dir / "srt_path.srt"
+
     if cache_path.exists() and not force:
         try:
             with open(cache_path, 'r', encoding='utf-8') as fh:
@@ -221,17 +228,15 @@ def transcribe_and_cache_with_assemblyai(audio_path: str, api_key: Optional[str]
 
     logging.info("[AssemblyAI] Submitting audio for transcription (once)...")
     try:
-        transcript_obj = transcriber.transcribe(audio_path, config=config)
+        transcript = transcriber.transcribe(audio_path, config=config)
     except Exception as e:
         logging.warning(f"[AssemblyAI] Transcription call failed: {e}")
         return {'transcript': None, 'words': [], 'pauses': [], 'speakers': []}
 
-    words = []
-    pauses = []
-    speakers = []
+    words, pauses, speakers = [], [], []
 
-    if getattr(transcript_obj, 'status', None) == 'completed':
-        words_raw = getattr(transcript_obj, 'words', []) or []
+    if getattr(transcript, 'status', None) == 'completed':
+        words_raw = getattr(transcript, 'words', []) or []
         for w in words_raw:
             try:
                 words.append({
@@ -245,14 +250,13 @@ def transcribe_and_cache_with_assemblyai(audio_path: str, api_key: Optional[str]
             w = words_raw[i]
             w_next = words_raw[i + 1]
             gap_ms = w_next.start - w.end
-            gap_s = gap_ms / 1000.0
-            if gap_s >= 0.5:
+            if gap_ms / 1000.0 >= 0.5:
                 pauses.append({
                     'start_s': w.end / 1000.0,
                     'end_s': w_next.start / 1000.0,
-                    'duration_s': gap_s
+                    'duration_s': gap_ms / 1000.0
                 })
-        for utter in getattr(transcript_obj, 'utterances', []):
+        for utter in getattr(transcript, 'utterances', []):
             speakers.append({
                 'speaker': getattr(utter, 'speaker', 'spk_unknown'),
                 'start_s': getattr(utter, 'start', 0) / 1000.0,
@@ -263,12 +267,13 @@ def transcribe_and_cache_with_assemblyai(audio_path: str, api_key: Optional[str]
         logging.warning("[AssemblyAI] Transcription incomplete; returning minimal features.")
 
     serialized = {
-        'transcript': getattr(transcript_obj, 'text', None) if transcript_obj else None,
+        'transcript': getattr(transcript, 'text', None) if transcript else None,
         'words': words,
         'pauses': pauses,
         'speakers': speakers
     }
 
+    # Cache JSON
     try:
         with open(cache_path, 'w', encoding='utf-8') as fh:
             json.dump(serialized, fh)
@@ -276,7 +281,17 @@ def transcribe_and_cache_with_assemblyai(audio_path: str, api_key: Optional[str]
     except Exception as e:
         logging.warning(f"[AssemblyAI] Failed to write cache {cache_path}: {e}")
 
+    # Write fixed-location SRT file
+    try:
+        subtitles = transcript.export_subtitles_srt()
+        with open(srt_path, 'w', encoding='utf-8') as f:
+            f.write(subtitles)
+        logging.info(f"[AssemblyAI] Wrote subtitles to {srt_path}")
+    except Exception as e:
+        logging.warning(f"[AssemblyAI] Failed to write SRT subtitles: {e}")
+
     return serialized
+
 
 # ---------------------------------------------------------------------
 # Utilities: time, ffmpeg, fps
@@ -298,10 +313,9 @@ def is_video_file(path: str) -> bool:
 
 def extract_audio_ffmpeg(input_path: str, out_wav: str) -> bool:
     try:
-        cmd = [
-            'ffmpeg', '-y', '-i', str(input_path),
-            '-vn', '-ac', '1', '-ar', '16000', '-f', 'wav', str(out_wav)
-        ]
+        
+        cmd = ['ffmpeg', '-y', '-i', str(input_path), '-vn', '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1', str(out_wav)]
+    
         subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return True
     except Exception as e:
@@ -1203,8 +1217,8 @@ def generate_html_report(df: pd.DataFrame, csv_path: Path, out_path: str = 'vira
 # Main pipeline: process_file — uses threaded scoring so models aren't reloaded
 # ---------------------------------------------------------------------
 def process_file(
-    srt_path: str,
-    media_path: Optional[str] = None,
+    media_path:str,
+    srt_path: Optional[str] = "srt_path.srt",
     top_k: int = 10,
     num_workers: Optional[int] = None,
     refine_endings: bool = True,
@@ -1222,9 +1236,8 @@ def process_file(
     Uses threading for scoring so heavy models are loaded only once globally.
     """
     cfg = Cfg()
-    srt_path = str(srt_path)
     media_path = str(media_path) if media_path else None
-    logging.info(f"[PROCESS] Running on {srt_path} with media {media_path}")
+    logging.info(f"[PROCESS] Running on with media {media_path}")
 
     # prepare audio
     temp_audio = None
@@ -1246,7 +1259,7 @@ def process_file(
     get_models()
 
     # subtitles -> sentences
-    sentence_entries = load_subtitles(srt_path)
+    
     if not sentence_entries:
         logging.warning("[PROCESS] No sentences extracted.")
         return None
@@ -1266,7 +1279,7 @@ def process_file(
         audio_words = []
         audio_pauses = []
         audio_speakers = []
-
+    sentence_entries = load_subtitles(srt_path)
     # semantic boundaries
     boundaries = detect_semantic_boundaries(
         sentence_entries,
