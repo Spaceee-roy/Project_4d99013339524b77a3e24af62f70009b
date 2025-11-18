@@ -2,6 +2,7 @@ import os, time, subprocess, numpy as np, pandas as pd, sys, assemblyai as aai;
 from tqdm import tqdm;
 from pathlib import Path;
 import face_recognition, cv2;
+from titler import titler
 import shutil
 from dotenv import load_dotenv
 load_dotenv()
@@ -10,7 +11,6 @@ aai.settings.api_key = key
 
 
 def cut_video(input_path, output_path, start_time, end_time):
-    import shutil, subprocess, os
 
     # Ensure absolute paths
     input_path = os.path.abspath(input_path)
@@ -329,10 +329,12 @@ def Segmenter(video_path: str):
     from executioner import process_file
     process_file(video_path)
 
-
 def force_windows_path(p):
     return Path(p).resolve().as_posix()
-
+def TitleFunction(srt, video):
+    title_str = titler(srt)
+    title = Path(title_str).with_suffix('.mp4')
+    os.rename(video, force_windows_path(title.with_suffix('.mp4')))
 def process_video(input_video_path, df_clips, temp_dir):
     """Processes a single video file based on the clip data."""
     print(f"\n=======================================================")
@@ -368,9 +370,9 @@ def process_video(input_video_path, df_clips, temp_dir):
             
             # 3. Generate subtitles
             generate_subtitles(combined_output, subtitle_path)
-            
             # 4. Add subtitles to the final output
             add_subtitles(combined_output, subtitle_path, final_output)
+            TitleFunction(subtitle_path, final_output)
 
         except Exception as e:
             print(f"❌ Error processing segment {trueidx} for {input_video_name}: {e}")
@@ -404,6 +406,7 @@ def main():
 
     # Check if segmentation override is needed (this logic might need to be adapted
     # if segmentation needs to run for *every* video initially)
+    override = input("Should segmentation happen for all videos? (y/n): ").strip().lower()
     
     # Define temporary directory
     temp_dir = script_dir / "temp"
@@ -417,27 +420,10 @@ def main():
         return
     
     # Pre-process the DataFrame columns for time conversion (as in your original script)
-    import re
-
-    def safe_time_to_seconds(t):
-        """Convert HH:MM:SS.xxx or M:SS.xxx to float seconds safely."""
-        if pd.isna(t):
-            return 0.0
-        t = str(t).strip()
-        # Handle 'MM:SS.xxx' and 'HH:MM:SS.xxx'
-        parts = re.split('[:]', t)
-        parts = [float(p) for p in parts]
-        if len(parts) == 3:
-            h, m, s = parts
-        elif len(parts) == 2:
-            h = 0
-            m, s = parts
-        else:
-            return float(t)
-        return h * 3600 + m * 60 + s
-
-    df['Start_seconds'] = df['Start'].apply(safe_time_to_seconds)
-    df['End_seconds'] = df['End'].apply(safe_time_to_seconds)
+    df['Start'] = df['Start'].apply(lambda s: s if ':' in s else f"0:{s}")
+    df['End'] = df['End'].apply(lambda s: s if ':' in s else f"0:{s}")
+    df['Start_seconds'] = pd.to_timedelta(df['Start']).dt.total_seconds().astype(int)
+    df['End_seconds'] = pd.to_timedelta(df['End']).dt.total_seconds().astype(int)
 
     # --- Video Iteration ---
     
@@ -451,8 +437,6 @@ def main():
     print(f"\nFound {len(video_files)} video(s) to process.")
     
     for video_path in video_files:
-        # if override != 'y':
-            # Run segmentation before processing clips, if requested
         Segmenter(video_path) 
         
         # Process the video using the prepared DataFrame
