@@ -1,19 +1,3 @@
-#!/usr/bin/env python3
-"""
-executioner.py — Windows-safe, single-AssemblyAI-call, semantic-aware video segmenter
-
-Key behaviors:
-- Loads heavy ML models exactly once (global lazy loader).
-- Calls AssemblyAI at most once per unique audio file, caches transcript locally.
-- Semantic-aware segmentation (idea units) using sentence embeddings + discourse cues.
-- Endpoint refinement using word timestamps, prosody & silence detection.
-- Threaded scoring (ThreadPoolExecutor) so worker threads reuse the single global models
-  and do NOT reload them per worker — avoids Windows spawn/fork issues.
-- No CLI wrapper, import-safe. Call process_file(...) from your code.
-- Requires: sentence-transformers, bertopic, keybert, spacy(en_core_web_trf), pysrt,
-  assemblyai, transformers, sklearn, tqdm, pandas, numpy, librosa, python-dotenv, moviepy (optional)
-"""
-
 # Standard libs
 import os
 import re
