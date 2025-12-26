@@ -28,9 +28,6 @@ To deploy this project run
 
 
 ## Process
-
-Go to the website where the code is currently running. 
-
 Add the files required. (Check `Needed Files` above for the requirments)
 
 The script will find a timestamp where the speaker(s) says an intresting topic.
@@ -56,39 +53,3 @@ If there are multiple topics inside of the video, it will repeat these steps and
 
 ## Libraries Used
 
-Run this command: 
-
-```bash
-pip install requirments.txt
-```
-
-``` bash
-pip install opencv-python
-```
-``` bash
-pip install scipy
-```
-``` bash
-pip install spacy
-```
-``` bash
-pip install datetime
-```
-``` bash
-pip install face_recognition
-```
-``` bash
-pip install assemblyai
-```
-``` bash
-pip install pandas
-```
-``` bash
-pip install sentence_transformers
-```
-``` bash
-pip install sklearn
-```
-``` bash
-pip install pysrt
-```
