@@ -21,6 +21,7 @@ Main Folder/
 |--- main.py
 |--- executioner.py
 |--- titler.py
+|--- requirements.txt
 |--- .env
 |--- viral_clips.csv
 └--- face_position.csv
@@ -36,30 +37,25 @@ To deploy this project run
 
 
 ## Process
-Add the files required. (Check `Needed Files` above for the requirments)
+Add the files required. (Check `Needed Files` above for the requirements)
 
-The script will find a timestamp where the speaker(s) says an intresting topic.
+Executioner.py will find a timestamp where the speaker(s) say an interesting topic.
 
-Then it will cut that section of video and make a new .mp4 file and .mp3 file for audio.
+It will find all of these interesting topics and log the top 10 in a `CSV` and generate an `HTML` for nicer visualization.
 
-After that, it will get the face positions of the speakers and make the video centered. If there is no face displayed, it will go to where the last face was displayed.
+Main.py will then cut a clip, do face tracking, crop, burn subtitles and add title, description and metadata to the video.
 
-It will then add audio and generated subtites.
+Titler.py will be used by main.py to generate title, description and metadata.
 
-Lastly, it will burn the subtites and delete all unimportant files.
-
-The short is now complete.
-
-If there are multiple topics inside of the video, it will repeat these steps and generate all.
 ## Tech Stack
 
-**Client:** Python
-
-**Server:** Python
-
-
+**Python** is **goated**
 
 ## Libraries Used
+To install use
+```bash
+pip install -r requirements.txt
+```
 ```bash
 assemblyai
 tqdm
