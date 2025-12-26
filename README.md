@@ -53,3 +53,68 @@ If there are multiple topics inside of the video, it will repeat these steps and
 
 ## Libraries Used
 
+assemblyai
+
+tqdm
+
+face_recognition
+
+cv2 (OpenCV)
+
+pandas
+
+numpy
+
+pysrt
+
+groq
+
+dotenv (python-dotenv)
+
+spacy
+
+sentence_transformers
+
+keybert
+
+transformers
+
+bertopic
+
+sklearn (scikit-learn)
+
+librosa
+
+os
+
+sys
+
+time
+
+subprocess
+
+pathlib
+
+shutil
+
+re
+
+json
+
+logging
+
+string
+
+tempfile
+
+math
+
+hashlib
+
+datetime
+
+typing
+
+concurrent.futures
+
+functools
