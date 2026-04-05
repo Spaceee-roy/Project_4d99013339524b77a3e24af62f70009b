@@ -1244,9 +1244,7 @@ def process_file(
 
     # subtitles -> sentences
     
-    if not sentence_entries:
-        logging.warning("[PROCESS] No sentences extracted.")
-        return None
+
 
     # AssemblyAI: single call & cache
     audio_words = []
@@ -1265,6 +1263,9 @@ def process_file(
         audio_speakers = []
     sentence_entries = load_subtitles(srt_path)
     # semantic boundaries
+    if not sentence_entries:
+        logging.warning("[PROCESS] No sentences extracted.")
+        return None
     boundaries = detect_semantic_boundaries(
         sentence_entries,
         cfg,
@@ -1378,9 +1379,6 @@ def process_file(
 
     return df
 
-# ---------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------
 __all__ = [
     "process_file",
     "get_models",
