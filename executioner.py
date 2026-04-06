@@ -45,9 +45,7 @@ except Exception:
 # Logging configuration
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# ---------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------
+
 class Cfg:
     MAX_DURATION_SECONDS = 45
     MIN_DURATION_SECONDS = 20
@@ -90,9 +88,6 @@ class Cfg:
 
 FILLERS = {"uh", "um", "erm", "uhh", "umm", "like", "you know", "ah", "eh"}
 
-# ---------------------------------------------------------------------
-# Globals: models and transcript cache
-# ---------------------------------------------------------------------
 _GLOBAL_MODELS: Optional[Dict[str, Any]] = None
 TRANSCRIPT_CACHE_DIR = Path(".aai_cache")
 TRANSCRIPT_CACHE_DIR.mkdir(exist_ok=True)
@@ -277,9 +272,7 @@ def transcribe_and_cache_with_assemblyai(audio_path: str, api_key: Optional[str]
     return serialized
 
 
-# ---------------------------------------------------------------------
-# Utilities: time, ffmpeg, fps
-# ---------------------------------------------------------------------
+
 def safe_time_to_dt(t: time) -> datetime:
     return datetime.combine(datetime.min, t)
 
@@ -340,9 +333,7 @@ def get_video_fps(media_path: Optional[str]) -> float:
         pass
     return default_fps
 
-# ---------------------------------------------------------------------
-# SRT parsing -> sentence entries
-# ---------------------------------------------------------------------
+
 def load_subtitles(srt_path: str) -> List[Dict]:
     models = get_models()
     nlp = models.get('spacy')
@@ -374,9 +365,6 @@ def load_subtitles(srt_path: str) -> List[Dict]:
     logging.info(f"[SRT] Loaded {len(sentence_entries)} sentence entries from subtitles.")
     return sentence_entries
 
-# ---------------------------------------------------------------------
-# Semantic helpers
-# ---------------------------------------------------------------------
 def compute_sentence_embeddings(sentence_entries: List[Dict]) -> np.ndarray:
     models = get_models()
     st_model = models.get('st_model')
@@ -400,9 +388,6 @@ def update_centroid(centroid: Optional[np.ndarray], new_emb: np.ndarray, alpha: 
         return new_emb.copy()
     return (1.0 - alpha) * centroid + alpha * new_emb
 
-# ---------------------------------------------------------------------
-# Semantic-aware boundary detection
-# ---------------------------------------------------------------------
 def detect_semantic_boundaries(sentence_entries: List[Dict], cfg: Cfg,
                                min_coherence_time: float = 2.0,
                                drift_threshold: float = 0.35,
@@ -488,9 +473,6 @@ def detect_semantic_boundaries(sentence_entries: List[Dict], cfg: Cfg,
     logging.info(f"[SEMANTIC] Detected {len(final_boundaries)-1} semantic segments.")
     return sorted(list(set(final_boundaries)))
 
-# ---------------------------------------------------------------------
-# Fallback similarity-window detection
-# ---------------------------------------------------------------------
 def compute_similarity(sentences: List[str], cfg: Cfg) -> np.ndarray:
     models = get_models()
     st_model = models['st_model']
@@ -528,9 +510,6 @@ def detect_boundaries(sentence_entries: List[Dict], cfg: Cfg) -> List[int]:
     logging.info(f"[BOUNDARIES] Detected {len(b)-1} coarse segments from {len(sentences)} sentences.")
     return b
 
-# ---------------------------------------------------------------------
-# Candidate generation
-# ---------------------------------------------------------------------
 def generate_candidates(
     sentence_entries: List[Dict],
     boundaries: List[int],
@@ -643,9 +622,6 @@ def generate_candidates(
     logging.info(f'[CANDIDATES] Generated {len(candidates)} candidate clips.')
     return candidates
 
-# ---------------------------------------------------------------------
-# Prosody and endpoint refinement utilities
-# ---------------------------------------------------------------------
 def compute_audio_prosody_features(audio_path: str, start_s: float, end_s: float, hop_length: int = 512) -> Dict[str, Any]:
     try:
         duration = max(0.001, end_s - start_s)
@@ -876,9 +852,6 @@ def refine_candidate_endpoints(
     logging.info(f'[REFINE] Completed endpoint refinement for {len(candidates)} candidates.')
     return candidates
 
-# ---------------------------------------------------------------------
-# Precompute features
-# ---------------------------------------------------------------------
 def get_hook_score_ml(text: str) -> float:
     if not text or text.strip() == "":
         return 0.0
@@ -1065,9 +1038,6 @@ def precompute_features(candidates: List[Dict], cfg: Cfg, audio_path: Optional[s
     logging.info(f'[PRECOMPUTE] Precomputed features for {len(candidates)} candidates.')
     return candidates, embeddings, global_topics
 
-# ---------------------------------------------------------------------
-# Scoring worker (thread-safe: uses global models but only local data)
-# ---------------------------------------------------------------------
 def score_worker(arg_tuple):
     (idx, preview, duration, topic_score, keywords, topic_id, emotion_score, entity_count, global_topics, prosody_score, delivery_score) = arg_tuple
     cfg = Cfg()
@@ -1145,9 +1115,6 @@ def score_worker(arg_tuple):
         'Narrative': int(narrative)
     }
 
-# ---------------------------------------------------------------------
-# Redundancy filtering & selection
-# ---------------------------------------------------------------------
 def filter_redundant(clips: List[Dict], embeddings: np.ndarray, threshold: float) -> List[Dict]:
     if not clips:
         return []
@@ -1177,9 +1144,6 @@ def select_non_overlapping(clips: List[Dict], k: int) -> List[Dict]:
             break
     return selected
 
-# ---------------------------------------------------------------------
-# HTML report
-# ---------------------------------------------------------------------
 def generate_html_report(df: pd.DataFrame, csv_path: Path, out_path: str = 'viral_clips_report.html'):
     html = [
         "<!doctype html><html><head><meta charset='utf-8'><title>Viral Clips Report</title>",
@@ -1197,9 +1161,6 @@ def generate_html_report(df: pd.DataFrame, csv_path: Path, out_path: str = 'vira
         f.write("\n".join(html))
     logging.info(f"[REPORT] Visual report saved to {Path(out_path).resolve()}")
 
-# ---------------------------------------------------------------------
-# Main pipeline: process_file — uses threaded scoring so models aren't reloaded
-# ---------------------------------------------------------------------
 def process_file(
     media_path:str,
     srt_path: Optional[str] = "srt_path.srt",
