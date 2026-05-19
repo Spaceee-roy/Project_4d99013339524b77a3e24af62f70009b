@@ -1,7 +1,6 @@
 # Standard libs
 import os
 import re
-import sys
 import logging
 import string
 import tempfile
@@ -13,10 +12,8 @@ from pathlib import Path
 from datetime import datetime, time
 from typing import List, Dict, Tuple, Optional, Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from functools import lru_cache
 
 # Third-party libs
-import pysrt
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
@@ -91,7 +88,65 @@ FILLERS = {"uh", "um", "erm", "uhh", "umm", "like", "you know", "ah", "eh"}
 _GLOBAL_MODELS: Optional[Dict[str, Any]] = None
 TRANSCRIPT_CACHE_DIR = Path(".aai_cache")
 TRANSCRIPT_CACHE_DIR.mkdir(exist_ok=True)
+def safe_time_to_dt(t: time) -> datetime:
+    return datetime.combine(datetime.min, t)
 
+def duration_seconds(start: time, end: time) -> float:
+    return (safe_time_to_dt(end) - safe_time_to_dt(start)).total_seconds()
+
+def format_time(t: time) -> str:
+    return t.strftime('%H:%M:%S.%f')[:-3]
+
+def time_to_seconds(t: time) -> float:
+    return t.hour * 3600 + t.minute * 60 + t.second + t.microsecond / 1e6
+
+def is_video_file(path: str) -> bool:
+    return Path(path).suffix.lower() in {'.mp4', '.mov', '.mkv', '.webm', '.avi'}
+
+def extract_audio_ffmpeg(input_path: str, out_wav: str) -> bool:
+    try:
+        
+        cmd = ['ffmpeg', '-y', '-i', str(input_path), '-vn', '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1', str(out_wav)]
+    
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except Exception as e:
+        logging.warning(f"[FFMPEG] audio extraction failed: {e}")
+        return False
+
+def get_video_fps(media_path: Optional[str]) -> float:
+    default_fps = 30.0
+    if media_path is None:
+        return default_fps
+    try:
+        if _HAS_MOVIEPY:
+            clip = VideoFileClip(media_path)
+            fps_val = float(getattr(clip, 'fps', default_fps) or default_fps)
+            clip.reader.close()
+            if hasattr(clip, 'audio') and clip.audio is not None:
+                try:
+                    clip.audio.reader.close_proc()
+                except Exception:
+                    pass
+            return fps_val
+    except Exception:
+        pass
+    try:
+        cmd = [
+            'ffprobe', '-v', '0', '-of', 'json', '-select_streams', 'v:0',
+            '-show_entries', 'stream=r_frame_rate', str(media_path)
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        out = json.loads(proc.stdout)
+        if 'streams' in out and out['streams']:
+            r_frame_rate = out['streams'][0].get('r_frame_rate', '30/1')
+            if '/' in r_frame_rate:
+                a, b = r_frame_rate.split('/')
+                fps_val = float(a) / float(b) if float(b) != 0 else default_fps
+                return fps_val
+    except Exception:
+        pass
+    return default_fps
 def get_models():
     """
     Lazy-load heavy models once and return dict of models.
@@ -261,110 +316,69 @@ def transcribe_and_cache_with_assemblyai(audio_path: str, api_key: Optional[str]
         logging.warning(f"[AssemblyAI] Failed to write cache {cache_path}: {e}")
 
     # Write fixed-location SRT file
-    try:
-        subtitles = transcript.export_subtitles_srt()
-        with open(srt_path, 'w', encoding='utf-8') as f:
-            f.write(subtitles)
-        logging.info(f"[AssemblyAI] Wrote subtitles to {srt_path}")
-    except Exception as e:
-        logging.warning(f"[AssemblyAI] Failed to write SRT subtitles: {e}")
-
     return serialized
 
+def build_sentence_entries_from_words(words: List[Dict]) -> List[Dict]:
+    """
+    Build sentence entries directly from AssemblyAI word timestamps.
+    Returns [{'text': str, 'start': time, 'end': time}]
+    """
+    if not words:
+        return []
 
-
-def safe_time_to_dt(t: time) -> datetime:
-    return datetime.combine(datetime.min, t)
-
-def duration_seconds(start: time, end: time) -> float:
-    return (safe_time_to_dt(end) - safe_time_to_dt(start)).total_seconds()
-
-def format_time(t: time) -> str:
-    return t.strftime('%H:%M:%S.%f')[:-3]
-
-def time_to_seconds(t: time) -> float:
-    return t.hour * 3600 + t.minute * 60 + t.second + t.microsecond / 1e6
-
-def is_video_file(path: str) -> bool:
-    return Path(path).suffix.lower() in {'.mp4', '.mov', '.mkv', '.webm', '.avi'}
-
-def extract_audio_ffmpeg(input_path: str, out_wav: str) -> bool:
-    try:
-        
-        cmd = ['ffmpeg', '-y', '-i', str(input_path), '-vn', '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1', str(out_wav)]
-    
-        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return True
-    except Exception as e:
-        logging.warning(f"[FFMPEG] audio extraction failed: {e}")
-        return False
-
-def get_video_fps(media_path: Optional[str]) -> float:
-    default_fps = 30.0
-    if media_path is None:
-        return default_fps
-    try:
-        if _HAS_MOVIEPY:
-            clip = VideoFileClip(media_path)
-            fps_val = float(getattr(clip, 'fps', default_fps) or default_fps)
-            clip.reader.close()
-            if hasattr(clip, 'audio') and clip.audio is not None:
-                try:
-                    clip.audio.reader.close_proc()
-                except Exception:
-                    pass
-            return fps_val
-    except Exception:
-        pass
-    try:
-        cmd = [
-            'ffprobe', '-v', '0', '-of', 'json', '-select_streams', 'v:0',
-            '-show_entries', 'stream=r_frame_rate', str(media_path)
-        ]
-        proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        out = json.loads(proc.stdout)
-        if 'streams' in out and out['streams']:
-            r_frame_rate = out['streams'][0].get('r_frame_rate', '30/1')
-            if '/' in r_frame_rate:
-                a, b = r_frame_rate.split('/')
-                fps_val = float(a) / float(b) if float(b) != 0 else default_fps
-                return fps_val
-    except Exception:
-        pass
-    return default_fps
-
-
-def load_subtitles(srt_path: str) -> List[Dict]:
     models = get_models()
     nlp = models.get('spacy')
-    subs = pysrt.open(srt_path, encoding='utf-8')
-    full_text = " ".join(sub.text_without_tags.replace("\n", " ") for sub in subs)
+
+    # --- Reconstruct full text ---
+    tokens = []
+    for w in words:
+        token = (w.get('text') or "").strip()
+        if token:
+            tokens.append(token)
+
+    full_text = " ".join(tokens)
     doc = nlp(full_text)
 
-    char_to_time = {}
+    # --- Map char index -> word index ---
+    char_to_word_idx = {}
     cursor = 0
-    for sub in subs:
-        text = sub.text_without_tags.replace('\n', ' ') + ' '
-        for i in range(len(text)):
-            char_to_time[cursor + i] = (sub.start.to_time(), sub.end.to_time())
-        cursor += len(text)
 
+    for i, w in enumerate(words):
+        token = (w.get('text') or "").strip() + " "
+        for j in range(len(token)):
+            char_to_word_idx[cursor + j] = i
+        cursor += len(token)
+
+    # --- Build sentence entries ---
     sentence_entries = []
+
     for sent in doc.sents:
         start_char = sent.start_char
         end_char = max(sent.end_char - 1, sent.start_char)
-        if start_char in char_to_time and end_char in char_to_time:
-            s_time = char_to_time[start_char][0]
-            e_time = char_to_time[end_char][1]
+
+        if start_char in char_to_word_idx and end_char in char_to_word_idx:
+            start_idx = char_to_word_idx[start_char]
+            end_idx = char_to_word_idx[end_char]
+
+            start_s = words[start_idx]['start_s']
+            end_s = words[end_idx]['end_s']
+
+            # convert to datetime.time (to match your pipeline)
+            def to_time(sec):
+                hrs = int(sec // 3600) % 24
+                mins = int((sec % 3600) // 60)
+                secs = int(sec % 60)
+                micros = int((sec - int(sec)) * 1e6)
+                return time(hour=hrs, minute=mins, second=secs, microsecond=micros)
+
             sentence_entries.append({
                 'text': sent.text.strip(),
-                'start': s_time,
-                'end': e_time
+                'start': to_time(start_s),
+                'end': to_time(end_s)
             })
 
-    logging.info(f"[SRT] Loaded {len(sentence_entries)} sentence entries from subtitles.")
+    logging.info(f"[WORDS] Built {len(sentence_entries)} sentence entries from word timestamps.")
     return sentence_entries
-
 def compute_sentence_embeddings(sentence_entries: List[Dict]) -> np.ndarray:
     models = get_models()
     st_model = models.get('st_model')
@@ -1208,21 +1222,11 @@ def process_file(
 
 
     # AssemblyAI: single call & cache
-    audio_words = []
-    audio_pauses = []
-    audio_speakers = []
-    if audio_for_prosody:
-        transcript_data = transcribe_and_cache_with_assemblyai(audio_for_prosody, force=assemblyai_force_refresh)
-        audio_words = transcript_data.get('words', [])
-        audio_pauses = transcript_data.get('pauses', [])
-        audio_speakers = transcript_data.get('speakers', [])
-    else:
-        if os.getenv('ASSEMBLYAI_API_KEY'):
-            logging.warning("[PROCESS] ASSEMBLYAI_API_KEY set but no audio provided; skipping AssemblyAI.")
-        audio_words = []
-        audio_pauses = []
-        audio_speakers = []
-    sentence_entries = load_subtitles(srt_path)
+
+    transcript_data = transcribe_and_cache_with_assemblyai(audio_for_prosody)
+    sentence_entries = build_sentence_entries_from_words(transcript_data['words'])
+    pauses = transcript_data['pauses']
+    speakers = transcript_data['speakers']
     # semantic boundaries
     if not sentence_entries:
         logging.warning("[PROCESS] No sentences extracted.")
@@ -1236,7 +1240,7 @@ def process_file(
     )
 
     # candidate generation
-    candidates = generate_candidates(sentence_entries, boundaries, audio_pauses, audio_speakers, cfg)
+    candidates = generate_candidates(sentence_entries, boundaries, pauses, speakers, cfg)
     if not candidates:
         logging.warning("[PROCESS] No candidates.")
         return None
@@ -1252,7 +1256,7 @@ def process_file(
     if refine_endings:
         candidates = refine_candidate_endpoints(
             candidates,
-            word_timestamps=audio_words,
+            word_timestamps=transcript_data.get('words', []),
             audio_path=audio_for_prosody,
             media_path=media_path,
             cfg=cfg,
