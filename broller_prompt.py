@@ -6,14 +6,22 @@ import urllib.request
 ASS_FILE = "subtitles.ass"
 MODEL = "qwen3.5:9b"
 OLLAMA_URL = "http://localhost:11434/api/generate"
-MAX_TOKENS = 100
+MAX_TOKENS = 1000
+OUTPUT_COUNT = 3
+IMAGE_DURATION_SECONDS = 5.0
+OUTPUT_FILE = "image_prompts.json"
 
 def clean_ass_text(text):
     text = re.sub(r"\{[^}]*\}", "", text)
     text = text.replace("\\N", " ").replace("\\n", " ")
     return re.sub(r"\s+", " ", text).strip()
+def ass_time_to_seconds(value):
+    hours, minutes, seconds = value.split(":")
+    return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+
 def read_ass_lines(path):
     lines = []
+    by_text = {}
 
     with open(path, "r", encoding="utf-8-sig", errors="replace") as file:
         for line in file:
@@ -25,10 +33,41 @@ def read_ass_lines(path):
                 continue
 
             text = clean_ass_text(parts[9])
-            if text and text not in lines:
-                lines.append(text)
+            if not text:
+                continue
+
+            start = ass_time_to_seconds(parts[1])
+            end = ass_time_to_seconds(parts[2])
+            if text in by_text:
+                by_text[text]["start"] = min(by_text[text]["start"], start)
+                by_text[text]["end"] = max(by_text[text]["end"], end)
+            else:
+                item = {"start": start, "end": end, "text": text}
+                by_text[text] = item
+                lines.append(item)
 
     return lines
+
+
+def split_into_sections(lines, section_count=OUTPUT_COUNT):
+    """Split subtitle lines into contiguous, evenly sized sections."""
+    if section_count < 1:
+        raise ValueError("section_count must be at least 1")
+    if not lines:
+        return []
+
+    section_count = min(section_count, len(lines))
+    base_size, remainder = divmod(len(lines), section_count)
+    sections = []
+    start = 0
+
+    for index in range(section_count):
+        size = base_size + (1 if index < remainder else 0)
+        end = start + size
+        sections.append(lines[start:end])
+        start = end
+
+    return sections
 
 
 def clean_ollama_response(text):
@@ -61,12 +100,25 @@ def generate_with_ollama(prompt):
 
 
 def ask_ollama(subtitle_lines):
+    timed_subtitles = [
+        {
+            "start_seconds": line["start"],
+            "end_seconds": line["end"],
+            "text": line["text"],
+        }
+        for line in subtitle_lines
+    ]
     prompt = f"""
 You are an expert image-prompt writer for short-form video B-roll.
 
-Use the subtitles to infer the best single image to generate. Return exactly one
-concise image-generation prompt in one sentence. Do not return JSON, markdown,
-labels, notes, explanations, quotes, or multiple options.
+Use the timed subtitles to infer the best single image to generate and the best
+moment to introduce it. The image will remain visible for exactly five seconds.
+Choose start_seconds from within the supplied subtitle section, at the moment
+whose spoken idea is best represented by the image.
+
+Return only valid JSON with exactly these fields:
+{{"start_seconds": 12.42, "image_prompt": "One concise prompt sentence."}}
+Do not return markdown, notes, explanations, or multiple options.
 
 The prompt must naturally include:
 - Subject: who or what is in the image
@@ -84,12 +136,44 @@ for image generation. Keep the final answer short. Do not include spoken lines,
 speech bubbles, captions, or any visible text from the subtitles.
 
 
-Subtitles:
-{json.dumps(subtitle_lines, indent=2)}
+Subtitle section:
+{json.dumps(timed_subtitles, indent=2)}
 """
-    return generate_with_ollama(prompt)
+    response = generate_with_ollama(prompt)
+    response = re.sub(r"^```(?:json)?\s*|\s*```$", "", response, flags=re.IGNORECASE)
+    result = json.loads(response)
+
+    section_start = subtitle_lines[0]["start"]
+    section_end = subtitle_lines[-1]["end"]
+    start = float(result["start_seconds"])
+    if not section_start <= start <= section_end:
+        start = section_start
+
+    return {
+        "start_seconds": start,
+        "image_prompt": str(result["image_prompt"]).strip(),
+    }
 
 
-subtitle_lines = read_ass_lines(ASS_FILE)
-image_prompt = ask_ollama(subtitle_lines)
-print(image_prompt)
+def main():
+    subtitle_lines = read_ass_lines(ASS_FILE)
+    sections = split_into_sections(subtitle_lines)
+
+    if not sections:
+        raise RuntimeError(f"No dialogue lines found in {ASS_FILE}")
+
+    outputs = []
+    for index, section in enumerate(sections, start=1):
+        output = ask_ollama(section)
+        output["output_number"] = index
+        outputs.append(output)
+        print(f"Output {index}: {json.dumps(output, ensure_ascii=False)}")
+
+    with open(OUTPUT_FILE, "w", encoding="utf-8") as file:
+        json.dump(outputs, file, ensure_ascii=False, indent=2)
+
+    print(f"Saved {len(outputs)} outputs to {OUTPUT_FILE}")
+
+
+if __name__ == "__main__":
+    main()
