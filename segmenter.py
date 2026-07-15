@@ -10,14 +10,16 @@ import ollama
 
 TIMESTAMPS_PATH = Path(".aai_cache/text.json")
 OUTPUT_PATH = Path("output.txt")
+DIAGNOSTICS_PATH = Path("segmenter_diagnostics.json")
 MODEL = "qwen3.5:9b"
 MODEL_SEED = 42
+MODEL_SEEDS = (42, 137)
+REPLACEMENT_SEED = 911
 CLIP_COUNT = 10
-MODEL_CANDIDATE_COUNT = 24
+MODEL_CANDIDATE_COUNT = 16
 TARGET_DURATION_S = 30
 MIN_DURATION_S = 27
 MAX_DURATION_S = 33
-ANCHORS_PER_CLIP = 3
 
 
 client = ollama.Client(host="http://127.0.0.1:11434")
@@ -122,26 +124,25 @@ def transcript_for_model(units):
     )
 
 
-def response_schema():
+def response_schema(candidate_count=MODEL_CANDIDATE_COUNT):
     return {
         "type": "object",
         "properties": {
             "clips": {
                 "type": "array",
-                "minItems": MODEL_CANDIDATE_COUNT,
-                "maxItems": MODEL_CANDIDATE_COUNT,
+                "minItems": candidate_count,
+                "maxItems": candidate_count,
                 "items": {
                     "type": "object",
                     "properties": {
-                        "hook_unit": {"type": "integer"},
-                        "development_unit": {"type": "integer"},
-                        "payoff_unit": {"type": "integer"},
+                        "anchors": {
+                            "type": "array",
+                            "minItems": 2,
+                            "maxItems": 4,
+                            "items": {"type": "integer"},
+                        },
                     },
-                    "required": [
-                        "hook_unit",
-                        "development_unit",
-                        "payoff_unit",
-                    ],
+                    "required": ["anchors"],
                     "additionalProperties": False,
                 },
             }
@@ -151,7 +152,7 @@ def response_schema():
     }
 
 
-def find_viral_segments(units):
+def find_viral_segments(units, seed=MODEL_SEED, candidate_count=MODEL_CANDIDATE_COUNT, extra_rules=""):
     response = client.chat(
         model=MODEL,
         messages=[
@@ -165,23 +166,25 @@ def find_viral_segments(units):
             {
                 "role": "user",
                 "content": f"""
-Rank the {MODEL_CANDIDATE_COUNT} strongest DISTINCT clip candidates in this transcript. Python will time them and keep the best {CLIP_COUNT}.
+First identify the transcript's semantic discussion chapters. Then rank the {candidate_count} strongest DISTINCT clip candidates across those chapters. Python will time them and keep the best {CLIP_COUNT}.
 
-For each candidate choose exactly three chronological sentence anchors:
-- hook_unit: the opening idea or line. It must work cold, immediately create curiosity, and avoid acknowledgements or unresolved references.
-- development_unit: the essential context, escalation, evidence, or mechanism needed to understand the hook.
-- payoff_unit: the strongest answer, reveal, consequence, punchline, or memorable conclusion. It must feel finished.
+For each candidate return 2 to 4 chronological sentence IDs in anchors:
+- first anchor: the opening idea or line. It must work cold, immediately create curiosity, and name its subject.
+- middle anchors: only the essential context, escalation, evidence, or mechanism.
+- final anchor: the strongest answer, reveal, consequence, punchline, or memorable conclusion. It must feel finished.
 
 Editorial rules:
-- The three anchors must form one self-contained story when stitched with ellipses: setup, development, payoff.
+- The anchors must form one self-contained story when stitched with ellipses: setup, development, payoff.
 - Preserve cause and effect. Never skip a sentence that makes the next excerpt confusing.
-- Keep all three anchors within 90 source seconds so they come from the same local discussion.
+- Keep all anchors within 90 source seconds so they come from the same local discussion.
+- Keep each omitted gap under 15 source seconds. Ellipses should tighten one local story, not jump to a later discussion.
 - Remove filler and repetition, not essential logic.
 - Do not submit alternate versions of the same concept. Every candidate needs a different central promise.
 - Spread candidates across the full transcript instead of clustering near the beginning.
 - Favor surprising facts, emotional stakes, humor, useful explanations, contrarian insights, and quotable conclusions.
-- Unit IDs must exist and hook_unit < development_unit < payoff_unit.
+- Unit IDs must exist, be unique, and be strictly increasing.
 - Return candidates best-first.
+{extra_rules}
 
 TIMESTAMPED SENTENCES:
 {transcript_for_model(units)}
@@ -189,12 +192,12 @@ TIMESTAMPED SENTENCES:
             },
         ],
         think=False,
-        format=response_schema(),
+        format=response_schema(candidate_count),
         options={
             "num_ctx": 16384,
             "num_predict": 3072,
             "temperature": 0.15,
-            "seed": MODEL_SEED,
+            "seed": seed,
         },
     )
     return json.loads(response["message"]["content"])
@@ -240,10 +243,10 @@ def extract_anchors(clip, unit_count):
         collect({key: value for key, value in clip.items() if key != "title"})
 
     anchors = sorted(set(value for value in anchors if 1 <= value <= unit_count))
-    if len(anchors) >= ANCHORS_PER_CLIP:
-        return [anchors[0], anchors[len(anchors) // 2], anchors[-1]]
-    if len(anchors) == 2 and anchors[1] - anchors[0] >= 2:
-        return [anchors[0], (anchors[0] + anchors[1]) // 2, anchors[1]]
+    if 2 <= len(anchors) <= 4:
+        return anchors
+    if len(anchors) > 4:
+        return [anchors[0], anchors[len(anchors) // 3], anchors[(len(anchors) * 2) // 3], anchors[-1]]
     if len(anchors) == 1 and unit_count >= 3:
         spacing = min(6, (unit_count - 1) // 2)
         center = min(max(anchors[0], spacing + 1), unit_count - spacing)
@@ -439,7 +442,7 @@ def _bad_payoff(text):
     return any(marker in lowered for marker in outro_markers)
 
 
-def _anchor_window_candidates(anchor_id, role, units):
+def _anchor_window_candidates(anchor_id, role, units, target_part_s):
     options = []
     search_radius = 18
     for start_id in range(max(1, anchor_id - search_radius), anchor_id + 1):
@@ -463,34 +466,42 @@ def _anchor_window_candidates(anchor_id, role, units):
             ) + _weak_boundary_penalty(
                 units[end_id - 1]["text"], is_payoff=role == "payoff"
             )
-            local_score = abs(duration - TARGET_DURATION_S / 3) + role_penalty + boundary_penalty
+            local_score = abs(duration - target_part_s) + role_penalty + boundary_penalty
             options.append((local_score, start_id, end_id, duration))
 
     if not options:
         unit = units[anchor_id - 1]
         duration = unit["end_s"] - unit["start_s"]
         return [(0, anchor_id, anchor_id, duration)]
-    return sorted(options)[:32]
+    return sorted(options)[:14]
 
 
 def _best_anchor_windows(anchors, units):
-    role_options = [
-        _anchor_window_candidates(anchors[0], "hook", units),
-        _anchor_window_candidates(anchors[1], "development", units),
-        _anchor_window_candidates(anchors[2], "payoff", units),
-    ]
+    target_part_s = TARGET_DURATION_S / len(anchors)
+    role_options = []
+    for index, anchor in enumerate(anchors):
+        role = "hook" if index == 0 else "payoff" if index == len(anchors) - 1 else "development"
+        role_options.append(_anchor_window_candidates(anchor, role, units, target_part_s))
     best = None
     for windows in product(*role_options):
         # Leave at least one complete sentence out at each ellipsis.
-        if windows[0][2] + 1 >= windows[1][1] or windows[1][2] + 1 >= windows[2][1]:
+        if any(
+            windows[index][2] + 1 >= windows[index + 1][1]
+            for index in range(len(windows) - 1)
+        ):
             continue
-        hook_text = " ".join(
-            unit["text"] for unit in units[windows[0][1] - 1 : windows[0][2]]
-        )
-        payoff_text = " ".join(
-            unit["text"] for unit in units[windows[2][1] - 1 : windows[2][2]]
-        )
-        if _bad_opening(hook_text) or _bad_payoff(payoff_text):
+        if any(
+            units[windows[index + 1][1] - 1]["start_s"]
+            - units[windows[index][2] - 1]["end_s"]
+            > 15
+            for index in range(len(windows) - 1)
+        ):
+            continue
+        part_texts = [
+            " ".join(unit["text"] for unit in units[window[1] - 1 : window[2]])
+            for window in windows
+        ]
+        if any(_bad_opening(text) for text in part_texts) or _bad_payoff(part_texts[-1]):
             continue
         total = sum(window[3] for window in windows)
         duration_penalty = abs(total - TARGET_DURATION_S) * 6
@@ -511,10 +522,16 @@ def resolve_candidate(clip, rank, units, words):
         return None
     anchor_span = units[anchors[-1] - 1]["end_s"] - units[anchors[0] - 1]["start_s"]
     if anchor_span > 90:
-        anchors = _nearby_anchors(anchors[1], len(units))
+        anchors = _nearby_anchors(anchors[len(anchors) // 2], len(units), len(anchors))
     windows = _best_anchor_windows(anchors, units)
     if windows is None:
         return None
+    if _windows_have_large_gaps(windows, units):
+        center = round(sum(anchors) / len(anchors))
+        anchors = _nearby_anchors(center, len(units), len(anchors))
+        windows = _best_anchor_windows(anchors, units)
+        if windows is None:
+            return None
 
     ranges = []
     for start_id, end_id in windows:
@@ -535,7 +552,7 @@ def resolve_candidate(clip, rank, units, words):
 
     combined = " ".join(part["text"] for part in ranges)
     if not _parts_are_coherent(ranges):
-        anchors = _nearby_anchors(anchors[1], len(units))
+        anchors = _nearby_anchors(anchors[len(anchors) // 2], len(units), len(anchors))
         windows = _best_anchor_windows(anchors, units)
         if windows is None:
             return None
@@ -555,17 +572,42 @@ def resolve_candidate(clip, rank, units, words):
     return {
         "rank": rank,
         "anchors": anchors,
-        "center": anchors[1],
+        "center": anchors[len(anchors) // 2],
         "ranges": ranges,
+        "omitted": _omitted_dialogue(ranges, units),
         "duration": duration,
         "tokens": _meaningful_tokens(combined),
     }
 
 
-def _nearby_anchors(center, unit_count):
-    spacing = min(6, (unit_count - 1) // 2)
-    center = min(max(center, spacing + 1), unit_count - spacing)
-    return [center - spacing, center, center + spacing]
+def _nearby_anchors(center, unit_count, part_count=3):
+    part_count = min(4, max(2, part_count))
+    radius = min(9, max(part_count - 1, (unit_count - 1) // 8))
+    low = max(1, center - radius)
+    high = min(unit_count, center + radius)
+    if high - low < part_count - 1:
+        low = max(1, min(low, unit_count - part_count + 1))
+        high = min(unit_count, low + part_count - 1)
+    anchors = [round(low + index * (high - low) / (part_count - 1)) for index in range(part_count)]
+    return sorted(set(anchors))
+
+
+def _windows_have_large_gaps(windows, units, max_gap_s=15):
+    return any(
+        units[right_start - 1]["start_s"] - units[left_end - 1]["end_s"] > max_gap_s
+        for (_, left_end), (right_start, _) in zip(windows, windows[1:])
+    )
+
+
+def _omitted_dialogue(ranges, units):
+    omitted = []
+    for left, right in zip(ranges, ranges[1:]):
+        text = " ".join(
+            unit["text"]
+            for unit in units[left["end_unit"] : right["start_unit"] - 1]
+        )
+        omitted.append(text)
+    return omitted
 
 
 def _resolve_windows(windows, units, words):
@@ -679,47 +721,6 @@ def _is_duplicate(candidate, selected):
     return False
 
 
-def _is_relaxed_duplicate(candidate, selected):
-    """Last-slot check: allow related subjects, never the same clip or promise."""
-    for existing in selected:
-        candidate_topic = candidate.get("topic_tokens", set())
-        existing_topic = existing.get("topic_tokens", set())
-        topic_union = candidate_topic | existing_topic
-        topic_similarity = (
-            len(candidate_topic & existing_topic) / len(topic_union)
-            if topic_union
-            else 0
-        )
-        if (
-            _source_overlap(candidate, existing) > 0.20
-            or _text_similarity(candidate, existing) > 0.65
-            or topic_similarity > 0.80
-        ):
-            return True
-    return False
-
-
-def _fallback_candidates(units, words, existing):
-    candidates = []
-    occupied = [candidate["center"] for candidate in existing]
-    for index in range(CLIP_COUNT * 4):
-        center = round((index + 0.5) * len(units) / (CLIP_COUNT * 4))
-        center = min(max(center, 7), len(units) - 6)
-        if any(abs(center - used) < 10 for used in occupied):
-            continue
-        anchors = [center - 6, center, center + 6]
-        clip = {
-            "hook_unit": anchors[0],
-            "development_unit": anchors[1],
-            "payoff_unit": anchors[2],
-        }
-        candidate = resolve_candidate(clip, MODEL_CANDIDATE_COUNT + index, units, words)
-        if candidate and not _is_duplicate(candidate, existing + candidates):
-            candidates.append(candidate)
-            occupied.append(center)
-    return candidates
-
-
 def review_schema(candidate_count):
     return {
         "type": "object",
@@ -731,7 +732,6 @@ def review_schema(candidate_count):
                 "items": {
                     "type": "object",
                     "properties": {
-                        "candidate_id": {"type": "integer"},
                         "topic_key": {"type": "string"},
                         "hook": {"type": "integer", "minimum": 1, "maximum": 10},
                         "continuity": {"type": "integer", "minimum": 1, "maximum": 10},
@@ -742,7 +742,6 @@ def review_schema(candidate_count):
                         "reject": {"type": "boolean"},
                     },
                     "required": [
-                        "candidate_id",
                         "topic_key",
                         "hook",
                         "continuity",
@@ -761,20 +760,24 @@ def review_schema(candidate_count):
     }
 
 
-def review_candidates(candidates):
+def _review_candidate_batch(candidates):
     """Judge the finished edits, where missing context and weak payoffs are visible."""
-    if len(candidates) <= CLIP_COUNT:
+    if not candidates:
         return candidates
 
     previews = []
     for candidate_id, candidate in enumerate(candidates, start=1):
-        parts = "\n".join(
-            f"  PART {part_number}: {part['text']}"
-            for part_number, part in enumerate(candidate["ranges"], start=1)
-        )
+        edit_lines = []
+        for part_number, part in enumerate(candidate["ranges"], start=1):
+            edit_lines.append(f"  PART {part_number}: {part['text']}")
+            if part_number <= len(candidate["omitted"]):
+                omitted = candidate["omitted"][part_number - 1]
+                edit_lines.append(
+                    f"  OMITTED AFTER PART {part_number}: {omitted[:700] or '[nothing]'}"
+                )
         previews.append(
             f"C{candidate_id:02d} | {candidate['duration']:.2f}s | "
-            f"source center {candidate['center']}\n{parts}"
+            f"source center {candidate['center']}\n{chr(10).join(edit_lines)}"
         )
 
     response = client.chat(
@@ -784,7 +787,7 @@ def review_candidates(candidates):
                 "role": "system",
                 "content": (
                     "You are the final editorial gate for short-form clips. Judge only "
-                    "the assembled dialogue shown to you and return candidate IDs."
+                    "the assembled dialogue shown to you and preserve its exact order."
                 ),
             },
             {
@@ -803,16 +806,16 @@ High-scoring clips must:
 - work cold and immediately create curiosity;
 - form a complete setup, development, and payoff;
 - preserve the claim, mechanism, and consequence when the subject is explanatory;
-- make PART 1 lead naturally to PART 2 and PART 2 lead naturally to PART 3;
+- make every PART lead naturally to the next PART;
 - use ellipses only to remove filler while preserving meaning;
 - end on a reveal, answer, consequence, punchline, or quotable conclusion;
 - have a distinct central promise rather than another version of a nearby candidate.
 
-Set reject=true for mixed subjects, missing bridge sentences, context-dependent openings, weak/outro endings, incomplete explanations, or clips that would confuse a viewer who has not seen the source. Give each candidate a short topic_key describing its central promise; candidates with the same promise must use the same topic_key.
+The OMITTED lines show source dialogue removed at each ellipsis. Set reject=true when omitted dialogue contains a required antecedent, bridge, mechanism, answer, or payoff. Also reject mixed subjects, context-dependent openings, weak/outro endings, incomplete explanations, or clips that would confuse a viewer who has not seen the source. Give each candidate a short topic_key describing its central promise; candidates with the same promise must use the same topic_key.
 
 About duration: approximately {TARGET_DURATION_S} seconds is ideal, but a clip may run over {MAX_DURATION_S} seconds when needed to finish a complete sentence or thought. Never prefer a cut-off thought merely because it is shorter.
 
-Return one review for every candidate. Scores are integers from 1 to 10. Do not omit candidates.
+Return one review for every candidate in the exact order shown: the first review is C01, the second is C02, and so on. Never reorder or omit reviews. Scores are integers from 1 to 10.
 
 CANDIDATES:
 {chr(10).join(previews)}
@@ -834,19 +837,18 @@ CANDIDATES:
     except (json.JSONDecodeError, KeyError, TypeError):
         return candidates
 
-    seen = set()
-    for review in result.get("reviews", []):
-        candidate_id = _parse_unit_id(review.get("candidate_id"))
-        if candidate_id is None or not 1 <= candidate_id <= len(candidates) or candidate_id in seen:
-            continue
-        seen.add(candidate_id)
-        candidate = candidates[candidate_id - 1]
+    reviews = result.get("reviews", [])
+    if len(reviews) != len(candidates):
+        return candidates
+    for candidate, review in zip(candidates, reviews):
         scores = {
             key: max(1, min(10, int(review.get(key, 1))))
             for key in ("hook", "continuity", "payoff", "standalone", "novelty", "shareability")
         }
         essentials = (scores["hook"], scores["continuity"], scores["payoff"], scores["standalone"])
         candidate["review_pass"] = not bool(review.get("reject", True)) and min(essentials) >= 7
+        candidate["review_reject"] = bool(review.get("reject", True))
+        candidate["review_scores"] = scores
         candidate["review_score"] = (
             scores["hook"] * 1.4
             + scores["continuity"] * 1.7
@@ -861,10 +863,65 @@ CANDIDATES:
 
     for candidate in candidates:
         candidate.setdefault("review_pass", False)
+        candidate.setdefault("review_reject", True)
+        candidate.setdefault("review_scores", {})
         candidate.setdefault("review_score", 0.0)
         candidate.setdefault("topic_key", "")
         candidate.setdefault("topic_tokens", set())
     return sorted(candidates, key=lambda candidate: (candidate["review_pass"], candidate["review_score"]), reverse=True)
+
+
+def review_candidates(candidates):
+    reviewed = []
+    for start in range(0, len(candidates), 6):
+        reviewed.extend(_review_candidate_batch(candidates[start : start + 6]))
+    return sorted(
+        reviewed,
+        key=lambda candidate: (candidate.get("review_pass", False), candidate.get("review_score", 0.0)),
+        reverse=True,
+    )
+
+
+def _pick_candidates(ranked, units, selected=None):
+    selected = list(selected or [])
+    bucket_counts = Counter(
+        min(3, int(candidate["center"] * 4 / max(1, len(units))))
+        for candidate in selected
+    )
+
+    def quality(candidate):
+        bucket = min(3, int(candidate["center"] * 4 / max(1, len(units))))
+        coverage_bonus = 3.0 if bucket_counts[bucket] == 0 else 1.0 if bucket_counts[bucket] == 1 else 0.0
+        return candidate.get("review_score", 0.0) + coverage_bonus
+
+    while len(selected) < CLIP_COUNT:
+        eligible = [
+            candidate
+            for candidate in ranked
+            if candidate not in selected
+            and candidate.get("review_pass", False)
+            and not _is_duplicate(candidate, selected)
+        ]
+        if not eligible:
+            break
+        winner = max(eligible, key=quality)
+        selected.append(winner)
+        bucket = min(3, int(winner["center"] * 4 / max(1, len(units))))
+        bucket_counts[bucket] += 1
+    return selected
+
+
+def _replacement_rules(selected):
+    topics = ", ".join(candidate.get("topic_key", "") for candidate in selected if candidate.get("topic_key"))
+    regions = ", ".join(
+        f"{candidate['ranges'][0]['start_s']:.0f}-{candidate['ranges'][-1]['end_s']:.0f}s"
+        for candidate in selected
+    )
+    return f"""
+This is a targeted replacement pass. Do not repeat these already selected central promises: {topics or '[none]'}.
+Prefer strong, self-contained discussion chapters outside these already used source regions: {regions or '[none]'}.
+Return genuinely different promises, not alternate wording of the same subject. Focus on chapters with a cold-open hook, enough local context, and a conclusive final statement.
+"""
 
 
 def select_candidates(result, units, words):
@@ -873,53 +930,35 @@ def select_candidates(result, units, words):
         for rank, clip in enumerate(result.get("clips", []))
         if (candidate := resolve_candidate(clip, rank, units, words)) is not None
     ]
-
-    # Let the reviewer compare fallback alternatives against resolved candidates;
-    # do not suppress them merely because an unselected model candidate is nearby.
-    pool = resolved + _fallback_candidates(units, words, [])
-    ranked = review_candidates(pool[:24])
-
-    selected = []
-    bucket_counts = Counter()
-
-    def quality(candidate):
-        reviewed_score = candidate.get("review_score", 0.0)
-        if not reviewed_score:
-            reviewed_score = max(0.0, 50.0 - candidate.get("rank", 50))
-        bucket = min(3, int(candidate["center"] * 4 / max(1, len(units))))
-        coverage_bonus = 3.0 if bucket_counts[bucket] == 0 else 1.0 if bucket_counts[bucket] == 1 else 0.0
-        return reviewed_score + coverage_bonus
-
-    for require_review_pass in (True, False):
-        while len(selected) < CLIP_COUNT:
-            eligible = [
-                candidate
-                for candidate in ranked
-                if candidate not in selected
-                and (not require_review_pass or candidate.get("review_pass", False))
-                and not _is_duplicate(candidate, selected)
-            ]
-            if not eligible:
-                break
-            winner = max(eligible, key=quality)
-            selected.append(winner)
-            bucket = min(3, int(winner["center"] * 4 / max(1, len(units))))
-            bucket_counts[bucket] += 1
+    ranked = review_candidates(resolved[:28])
+    selected = _pick_candidates(ranked, units)
 
     if len(selected) < CLIP_COUNT:
-        for candidate in ranked:
-            if candidate in selected or _is_relaxed_duplicate(candidate, selected):
-                continue
-            selected.append(candidate)
-            if len(selected) == CLIP_COUNT:
-                break
+        needed = CLIP_COUNT - len(selected)
+        replacement_count = min(20, max(8, needed * 3))
+        replacements = find_viral_segments(
+            units,
+            seed=REPLACEMENT_SEED,
+            candidate_count=replacement_count,
+            extra_rules=_replacement_rules(selected),
+        )
+        start_rank = len(result.get("clips", []))
+        replacement_resolved = [
+            candidate
+            for offset, clip in enumerate(replacements.get("clips", []))
+            if (candidate := resolve_candidate(clip, start_rank + offset, units, words)) is not None
+        ]
+        replacement_ranked = review_candidates(replacement_resolved[:24])
+        ranked.extend(replacement_ranked)
+        selected = _pick_candidates(replacement_ranked, units, selected)
 
-    return sorted(selected, key=lambda candidate: candidate.get("review_score", 0.0), reverse=True)
+    selected = sorted(selected, key=lambda candidate: candidate.get("review_score", 0.0), reverse=True)
+    return selected, ranked
 
 
-def format_results(result, units, words):
+def format_results(selected):
     sections = []
-    for number, clip in enumerate(select_candidates(result, units, words), start=1):
+    for number, clip in enumerate(selected, start=1):
         mini_clips = "\n".join(
             f"- [{format_timestamp(part['start_s'])} - {format_timestamp(part['end_s'])}] "
             f"({part['end_s'] - part['start_s']:.2f}s) {part['text']}"
@@ -935,12 +974,46 @@ def format_results(result, units, words):
     return "\n\n".join(sections)
 
 
+def write_diagnostics(candidates, selected):
+    selected_ids = {id(candidate) for candidate in selected}
+    payload = {
+        "model": MODEL,
+        "generation_seeds": list(MODEL_SEEDS),
+        "replacement_seed": REPLACEMENT_SEED,
+        "selected_count": len(selected),
+        "candidate_count": len(candidates),
+        "candidates": [
+            {
+                "rank": candidate["rank"],
+                "selected": id(candidate) in selected_ids,
+                "duration": round(candidate["duration"], 3),
+                "anchors": candidate["anchors"],
+                "center": candidate["center"],
+                "topic_key": candidate.get("topic_key", ""),
+                "review_pass": candidate.get("review_pass", False),
+                "review_reject": candidate.get("review_reject", True),
+                "review_score": round(candidate.get("review_score", 0.0), 3),
+                "review_scores": candidate.get("review_scores", {}),
+                "ranges": candidate["ranges"],
+                "omitted": candidate.get("omitted", []),
+            }
+            for candidate in candidates
+        ],
+    }
+    DIAGNOSTICS_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
 def main():
     words = load_words()
     units = make_units(words)
-    result = find_viral_segments(units)
-    output = format_results(result, units, words)
+    clips = []
+    for seed in MODEL_SEEDS:
+        result = find_viral_segments(units, seed=seed)
+        clips.extend(result.get("clips", []))
+    selected, candidates = select_candidates({"clips": clips}, units, words)
+    output = format_results(selected)
     OUTPUT_PATH.write_text(output + "\n", encoding="utf-8")
+    write_diagnostics(candidates, selected)
     print(f"Wrote {OUTPUT_PATH} ({output.count('### Clip ')} clips)", file=sys.stderr)
 
 
